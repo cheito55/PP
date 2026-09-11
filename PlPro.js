@@ -548,7 +548,10 @@ function movieDetails(tmdbId) {
     } else {
         desc += "\n• Backend PlPro no disponible";
     }
-    if (!sources.length) desc += "\n• No se pudo resolver ningún servidor.";
+    if (!sources.length) {
+        desc += "\n• No se pudo resolver ningún servidor.";
+        desc += "\n\n--- Diagnóstico ---\n" + _debugLog.substring(0, 2500);
+    }
 
     if (data && data.videos && data.videos.results) {
         for (var v = 0; v < data.videos.results.length; v++) {
@@ -676,7 +679,10 @@ function episodeDetails(tmdbId, seasonNum, episodeNum) {
             }
         }
     }
-    if (!sources.length) desc += "\n• Ningún servidor pudo ser resuelto.";
+    if (!sources.length) {
+        desc += "\n• Ningún servidor pudo ser resuelto.";
+        desc += "\n\n--- Diagnóstico ---\n" + _debugLog.substring(0, 2500);
+    }
 
     var prev = parseInt(episodeNum, 10) - 1;
     var next = parseInt(episodeNum, 10) + 1;
