@@ -483,19 +483,34 @@ function tmdbVideo(item) {
 // ============================================================
 function movieDetails(tmdbId) {
     _debugLog = "";
-    log("[movie] TMDB " + tmdbId);
-    var data = tmdb("/movie/" + tmdbId + "?language=es-ES&append_to_response=videos,credits,similar");
-    if (!data) return mkDetail("plpro_movie_" + tmdbId, "Sin resultado", "", "plpro://movie/" + tmdbId, [], "No se pudo consultar TMDB.");
+    log("[movie] id=" + tmdbId);
 
-    var title = data.title || "Sin título";
-    var year = (data.release_date || "").substring(0, 4);
-    var poster = data.poster_path ? fixImg(data.poster_path) : "";
-    var rating = data.vote_average ? Number(data.vote_average).toFixed(1) : "N/A";
+    // El id que llega puede ser un id real de TMDB (recomendaciones/home)
+    // o un id nativo de PlPro (viene de la búsqueda propia de PlPro).
+    // Probamos TMDB primero; si no matchea, usamos los datos propios
+    // de PlPro (raw) para no perder el detalle ni los servidores.
+    var data = tmdb("/movie/" + tmdbId + "?language=es-ES&append_to_response=videos,credits,similar");
+
+    var plRaw = null;
+    var plId = tmdbId;
+
+    if (!data) {
+        log("[movie] TMDB no matcheó ese id; probando como id nativo de PlPro");
+        plRaw = ppGet("/movies/" + tmdbId);
+        if (!plRaw) {
+            return mkDetail("plpro_movie_" + tmdbId, "Sin resultado", "", "plpro://movie/" + tmdbId, [], "No se encontró ni en TMDB ni en PlPro.");
+        }
+    }
+
+    var title = data ? (data.title || "Sin título") : getItemTitle(plRaw);
+    var year = data ? (data.release_date || "").substring(0, 4) : getItemYear(plRaw);
+    var poster = data && data.poster_path ? fixImg(data.poster_path) : getItemImage(plRaw);
+    var rating = data && data.vote_average ? Number(data.vote_average).toFixed(1) : "N/A";
 
     var desc = "**" + title + "**" + (year ? " (" + year + ")" : "") + "\n⭐ " + rating + "/10";
-    if (data.runtime) desc += " | " + data.runtime + " min";
-    desc += "\n\n" + (data.overview || "Sin sinopsis");
-    if (data.genres) {
+    if (data && data.runtime) desc += " | " + data.runtime + " min";
+    desc += "\n\n" + (data ? (data.overview || "Sin sinopsis") : "Sin sinopsis (sin datos de TMDB)");
+    if (data && data.genres) {
         desc += "\n\n--- Géneros ---";
         for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
     }
@@ -503,8 +518,12 @@ function movieDetails(tmdbId) {
     var sources = [];
     desc += "\n\n--- Servidores PlPro ---";
 
-    var pl = plproFindMovie(tmdbId, title, year);
-    var plId = pl && pl.id ? pl.id : tmdbId;
+    // Si ya tenemos el objeto crudo de PlPro (porque el id era nativo),
+    // no hace falta buscar de nuevo: el id de entrada YA es el id de PlPro.
+    if (!plRaw) {
+        var pl = plproFindMovie(tmdbId, title, year);
+        plId = pl && pl.id ? pl.id : tmdbId;
+    }
     log("[movie] PlPro ID = " + plId);
 
     var links = ppGet("/movies/" + plId + "/links");
@@ -531,7 +550,7 @@ function movieDetails(tmdbId) {
     }
     if (!sources.length) desc += "\n• No se pudo resolver ningún servidor.";
 
-    if (data.videos && data.videos.results) {
+    if (data && data.videos && data.videos.results) {
         for (var v = 0; v < data.videos.results.length; v++) {
             var trailer = data.videos.results[v];
             if (trailer.site === "YouTube" && trailer.type === "Trailer") {
@@ -549,40 +568,60 @@ function movieDetails(tmdbId) {
 // ============================================================
 function tvDetails(tmdbId) {
     _debugLog = "";
-    log("[tv] TMDB " + tmdbId);
+    log("[tv] id=" + tmdbId);
     var data = tmdb("/tv/" + tmdbId + "?language=es-ES&append_to_response=seasons,credits,similar");
-    if (!data) return mkDetail("plpro_tv_" + tmdbId, "Sin resultado", "", "plpro://tv/" + tmdbId, [], "No se pudo consultar TMDB.");
 
-    var title = data.name || "Sin título";
-    var year = (data.first_air_date || "").substring(0, 4);
-    var poster = data.poster_path ? fixImg(data.poster_path) : "";
-    var rating = data.vote_average ? Number(data.vote_average).toFixed(1) : "N/A";
+    if (data) {
+        var title = data.name || "Sin título";
+        var year = (data.first_air_date || "").substring(0, 4);
+        var poster = data.poster_path ? fixImg(data.poster_path) : "";
+        var rating = data.vote_average ? Number(data.vote_average).toFixed(1) : "N/A";
 
-    var desc = "**" + title + "**" + (year ? " (" + year + ")" : "") + "\n⭐ " + rating + "/10";
-    desc += "\n\n" + (data.overview || "Sin sinopsis");
-    if (data.genres) {
-        desc += "\n\n--- Géneros ---";
-        for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
-    }
+        var desc = "**" + title + "**" + (year ? " (" + year + ")" : "") + "\n⭐ " + rating + "/10";
+        desc += "\n\n" + (data.overview || "Sin sinopsis");
+        if (data.genres) {
+            desc += "\n\n--- Géneros ---";
+            for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
+        }
 
-    desc += "\n\n--- Episodios ---";
-    var seasonCount = 0;
-    if (data.seasons) {
-        for (var s = 0; s < data.seasons.length; s++) {
-            var season = data.seasons[s];
-            if (!season || season.season_number <= 0) continue;
-            seasonCount++;
-            var count = season.episode_count || 0;
-            desc += "\n\nT" + season.season_number + " (" + count + " episodios):";
-            for (var e = 1; e <= count; e++) {
-                desc += "\nE" + e + " → plpro://tv/" + tmdbId + "/" + season.season_number + "/" + e;
+        desc += "\n\n--- Episodios ---";
+        var seasonCount = 0;
+        if (data.seasons) {
+            for (var s = 0; s < data.seasons.length; s++) {
+                var season = data.seasons[s];
+                if (!season || season.season_number <= 0) continue;
+                seasonCount++;
+                var count = season.episode_count || 0;
+                desc += "\n\nT" + season.season_number + " (" + count + " episodios):";
+                for (var e = 1; e <= count; e++) {
+                    desc += "\nE" + e + " → plpro://tv/" + tmdbId + "/" + season.season_number + "/" + e;
+                }
             }
         }
-    }
-    if (!seasonCount) desc += "\nNo se encontraron temporadas.";
-    desc += "\n\nSeleccioná un episodio para reproducir.";
+        if (!seasonCount) desc += "\nNo se encontraron temporadas.";
+        desc += "\n\nSeleccioná un episodio para reproducir.";
 
-    return mkDetail("plpro_tv_" + tmdbId, title, poster, "plpro://tv/" + tmdbId, [], desc);
+        return mkDetail("plpro_tv_" + tmdbId, title, poster, "plpro://tv/" + tmdbId, [], desc);
+    }
+
+    // El id no matcheó en TMDB: probamos como id nativo de PlPro.
+    // No sabemos aún el formato exacto de la respuesta de /series/{id}
+    // de PlPro, así que mostramos su contenido crudo para poder
+    // armar el listado de temporadas/episodios en el próximo ajuste.
+    log("[tv] TMDB no matcheó ese id; probando como id nativo de PlPro");
+    var plRaw = ppGet("/series/" + tmdbId);
+    if (!plRaw) {
+        return mkDetail("plpro_tv_" + tmdbId, "Sin resultado", "", "plpro://tv/" + tmdbId, [], "No se encontró ni en TMDB ni en PlPro.");
+    }
+
+    var pTitle = getItemTitle(plRaw);
+    var pPoster = getItemImage(plRaw);
+    var pDesc = "**" + pTitle + "**\n\nNo se pudo obtener el listado de temporadas desde TMDB con este id.";
+    pDesc += "\n\n--- Datos crudos de PlPro (para depurar) ---\n";
+    try { pDesc += JSON.stringify(plRaw).substring(0, 1500); }
+    catch (e) { pDesc += "No se pudo serializar la respuesta."; }
+
+    return mkDetail("plpro_tv_" + tmdbId, pTitle, pPoster, "plpro://tv/" + tmdbId, [], pDesc);
 }
 
 // ============================================================
@@ -702,24 +741,70 @@ function doHome() {
 }
 
 // ============================================================
-// SEARCH
+// IMAGEN DE ITEM DE PLPRO (para mostrar algo mientras no haya match TMDB)
+// ============================================================
+function getItemImage(item) {
+    if (!item) return "";
+    var candidates = [
+        item.poster, item.poster_path, item.image, item.img,
+        item.thumbnail, item.thumb, item.cover, item.cover_url,
+        item.picture, item.photo, item.logo, item.d, item.c
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+        if (candidates[i]) {
+            var x = fixImg(candidates[i]);
+            if (x) return x;
+        }
+    }
+    return "";
+}
+
+// ============================================================
+// SEARCH — SOLO catálogo real de PlPro (nunca resultados que
+// PlPro no tenga, aunque existan en TMDB)
 // ============================================================
 function doSearch(query) {
     var videos = [], seen = {};
     if (!query) return videos;
+
+    // Películas: catálogo propio de PlPro
     try {
-        var results = tmdb("/search/multi?query=" + encodeURIComponent(query) + "&language=es-ES&include_adult=false");
-        if (results && results.results) {
-            for (var i = 0; i < results.results.length && videos.length < 30; i++) {
-                var r = results.results[i];
-                if (r.media_type !== "movie" && r.media_type !== "tv") continue;
-                var key = r.media_type + "_" + r.id;
-                if (seen[key]) continue;
-                var v = tmdbVideo(r);
-                if (v) { seen[key] = true; videos.push(v); }
+        var mq = ppGet("/movies/search/" + encodeURIComponent(query));
+        var mlist = mq ? (mq.results || mq.movies || mq.data || mq) : null;
+        if (Object.prototype.toString.call(mlist) === "[object Array]") {
+            for (var i = 0; i < mlist.length && videos.length < 30; i++) {
+                var it = mlist[i];
+                var id = it.id || it.a || it._id;
+                if (!id || seen["m_" + id]) continue;
+                seen["m_" + id] = true;
+                var title = getItemTitle(it);
+                var year = getItemYear(it);
+                var poster = getItemImage(it);
+                var display = "[Película] " + title + (year ? " (" + year + ")" : "");
+                videos.push(mkVideo("plpro_m_" + id, display, poster, "plpro://movie/" + id));
             }
         }
-    } catch (e) { log("[search] " + String(e)); }
+    } catch (e) { log("[search movies] " + String(e)); }
+
+    // Series: catálogo propio de PlPro
+    try {
+        var sq = ppGet("/series/search/" + encodeURIComponent(query));
+        var slist = sq ? (sq.results || sq.series || sq.data || sq) : null;
+        if (Object.prototype.toString.call(slist) === "[object Array]") {
+            for (var j = 0; j < slist.length && videos.length < 50; j++) {
+                var it2 = slist[j];
+                var id2 = it2.id || it2.a || it2._id;
+                if (!id2 || seen["s_" + id2]) continue;
+                seen["s_" + id2] = true;
+                var title2 = getItemTitle(it2);
+                var year2 = getItemYear(it2);
+                var poster2 = getItemImage(it2);
+                var display2 = "[Serie] " + title2 + (year2 ? " (" + year2 + ")" : "");
+                videos.push(mkVideo("plpro_s_" + id2, display2, poster2, "plpro://tv/" + id2));
+            }
+        }
+    } catch (e2) { log("[search series] " + String(e2)); }
+
     return videos;
 }
 
