@@ -811,6 +811,18 @@ function doSearch(query) {
         }
     } catch (e2) { log("[search series] " + String(e2)); }
 
+    // Si no encontramos nada, mostramos el diagnóstico como un
+    // resultado "falso" en la lista para poder ver qué pasó sin
+    // depender del DevServer.
+    if (!videos.length) {
+        videos.push(mkVideo(
+            "plpro_debug",
+            "[DEBUG] Sin resultados — abrir para ver detalle",
+            "",
+            "plpro://debug/search/" + encodeURIComponent(query)
+        ));
+    }
+
     return videos;
 }
 
@@ -851,6 +863,19 @@ function doRecommendations(url) {
 // ============================================================
 function doDetails(url) {
     if (!url) return mkDetail("", "", "", "", [], "URL vacía");
+
+    var dbg = url.match(/^plpro:\/\/debug\/search\/(.+)$/);
+    if (dbg) {
+        var q = decodeURIComponent(dbg[1]);
+        _debugLog = "";
+        log("[debug] repitiendo búsqueda para: " + q);
+        var mq2 = ppGet("/movies/search/" + encodeURIComponent(q));
+        log("[debug] /movies/search respuesta cruda:\n" + (mq2 ? JSON.stringify(mq2).substring(0, 1200) : "null"));
+        var sq2 = ppGet("/series/search/" + encodeURIComponent(q));
+        log("[debug] /series/search respuesta cruda:\n" + (sq2 ? JSON.stringify(sq2).substring(0, 1200) : "null"));
+        return mkDetail("plpro_debug", "Diagnóstico de búsqueda: " + q, "", url, [], _debugLog.substring(0, 3000));
+    }
+
     var mm = url.match(/plpro:\/\/movie\/(\d+)/);
     if (mm) return movieDetails(mm[1]);
     var ep = url.match(/plpro:\/\/tv\/(\d+)\/(\d+)\/(\d+)/);
