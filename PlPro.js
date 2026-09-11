@@ -1,815 +1,966 @@
 // ============================================================
-// PLPRO / PLAYPELIS — CATÁLOGO MXL + REPRODUCCIÓN PLPRO
-// Arquitectura:
-//   MXL/TMDB -> títulos, posters, año, TMDB ID
-//   PLPRO    -> ID interno + enlaces + HLS/MP4
+// PlPro GrayJay Source v44
+// ============================================================
+// CATÁLOGO:
+//   MXL TV / TMDB
+//   - Portadas
+//   - Títulos
+//   - Año
+//   - Búsqueda
+//   - Películas
+//   - Series
+//
+// REPRODUCCIÓN:
+//   PlPro.org
+//   - Búsqueda película
+//   - Búsqueda serie
+//   - Links de película
+//   - Links de episodios
+//   - HLS / MP4
 //
 // IMPORTANTE:
-//   NO se utilizan mkVideo/mkDetail/fixImg/tmdb de MXL
-//   directamente. Todo lo del catálogo tiene prefijo CAT_.
+//   MXL NO participa en la reproducción.
+//   PlPro.org NO participa en las portadas.
+//
 // ============================================================
 
-var PID = "8a2f4b7e-3c1d-4f6a-9b8e-5d2c1a9f6e40";
-var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
+// ============================================================
+// CONFIGURACIÓN
+// ============================================================
+
+var PID = "b7ff0ea6-ff3d-46b5-bec4-bff3c197b5eb";
+
+var UA =
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+    "AppleWebKit/537.36 (KHTML, like Gecko) " +
+    "Chrome/125.0.0.0 Safari/537.36";
 
 var PPID = new PlatformID("PlPro", "PlPro", PID);
+
+
+// ============================================================
+// MXL / TMDB - SOLO CATÁLOGO
+// ============================================================
+
+var CAT_TMDB_API = "https://api.themoviedb.org/3";
+
+var CAT_TMDB_KEY =
+    "18d85af64ccb07f720d758e05bbec3ad";
+
+var CAT_TMDB_IMG =
+    "https://image.tmdb.org/t/p/w500";
+
+var CAT_TMDB_BACKDROP =
+    "https://image.tmdb.org/t/p/w1280";
+
+
+// ============================================================
+// PLPRO.ORG - SOLO REPRODUCCIÓN
+// ============================================================
+
+var PP_URL = "https://plpro.org";
+
+var PP_USER = "p";
+var PP_PASS = "p";
+
+
+// ============================================================
+// JKANIME
+// ============================================================
+
+var JK_URL = "https://jkanime.net";
+
+
+// ============================================================
+// CACHE
+// ============================================================
+
+var CAT_CACHE = {};
+var PP_CACHE = {};
+
+var CACHE_TTL = 1800000;
+
+var MAX_TRY = 10;
+var MAX_EPISODES = 100;
+
+
+// ============================================================
+// DEBUG
+// ============================================================
 
 var _settings = {};
 var _debugLog = "";
 
-var IPTV_URL = "https://plpro.org";
-var IPTV_USER = "p";
-var IPTV_PASS = "p";
+function log(s) {
+    try {
+        _debugLog += String(s) + "\n";
+    } catch (e) {}
+}
 
-var JK = "https://jkanime.net";
-
-var TMDB_IMG = "https://image.tmdb.org/t/p/w500";
-var TMDB_API = "https://api.themoviedb.org/3";
-var TMDB_KEY = "18d85af64ccb07f720d758e05bbec3ad";
-
-var MAX_TRY = 10;
+function clearLog() {
+    _debugLog = "";
+}
 
 
 // ============================================================
-// HTTP PLPRO
+// HTTP
 // ============================================================
 
-function ppHttpGet(url, headers) {
+function httpGet(url, headers) {
     try {
         var h = headers || {};
+
         if (!h["User-Agent"]) {
             h["User-Agent"] = UA;
         }
 
-        var r = http.GET(url, h);
+        return http.GET(url, h);
+    } catch (e) {
+        log("HTTP ERROR: " + url + " :: " + e);
+        return null;
+    }
+}
 
-        if (!r) {
-            return "";
+
+function safeJson(text) {
+    try {
+        if (!text) return null;
+
+        if (typeof text == "object") {
+            return text;
         }
 
-        return r;
+        return JSON.parse(String(text));
     } catch (e) {
-        return "";
+        return null;
     }
 }
 
 
 // ============================================================
-// HTTP CATÁLOGO
+// CACHE
 // ============================================================
 
-function CAT_httpGet(url, headers) {
+function cacheGet(store, key) {
     try {
-        var h = headers || {};
-        if (!h["User-Agent"]) {
-            h["User-Agent"] = UA;
+        var x = store[key];
+
+        if (!x) return null;
+
+        if (Date.now() - x.time > CACHE_TTL) {
+            delete store[key];
+            return null;
         }
 
-        var r = http.GET(url, h);
-
-        if (!r) {
-            return "";
-        }
-
-        return r;
+        return x.value;
     } catch (e) {
-        return "";
+        return null;
     }
 }
 
 
-// ============================================================
-// UTILIDADES
-// ============================================================
-
-function ppCleanUrl(u) {
-    if (!u) return "";
-
-    var s = String(u);
-
-    s = s.replace(/&amp;/g, "&");
-    s = s.replace(/&quot;/g, "\"");
-    s = s.replace(/&#39;/g, "'");
-    s = s.replace(/\\u0026/g, "&");
-    s = s.replace(/\\\//g, "/");
-    s = s.replace(/\\\"/g, "\"");
-
-    return s.trim();
+function cachePut(store, key, value) {
+    try {
+        store[key] = {
+            time: Date.now(),
+            value: value
+        };
+    } catch (e) {}
 }
 
-function ppStripTags(s) {
-    if (!s) return "";
 
-    return String(s)
-        .replace(/<script[\s\S]*?<\/script>/gi, "")
-        .replace(/<style[\s\S]*?<\/style>/gi, "")
-        .replace(/<[^>]+>/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+// ============================================================
+// URL
+// ============================================================
+
+function cleanUrl(url) {
+    if (!url) return "";
+
+    url = String(url).trim();
+
+    url = url.replace(/\\u0026/g, "&");
+    url = url.replace(/&amp;/g, "&");
+
+    return url;
 }
 
-function ppHtmlDecode(s) {
+
+function absoluteUrl(base, url) {
+    if (!url) return "";
+
+    url = cleanUrl(url);
+
+    if (/^https?:\/\//i.test(url)) {
+        return url;
+    }
+
+    if (url.indexOf("//") == 0) {
+        return "https:" + url;
+    }
+
+    if (url.charAt(0) == "/") {
+        return base.replace(/\/+$/, "") + url;
+    }
+
+    return base.replace(/\/+$/, "") + "/" + url;
+}
+
+
+// ============================================================
+// HTML
+// ============================================================
+
+function htmlDecode(s) {
     if (!s) return "";
 
     return String(s)
         .replace(/&amp;/g, "&")
         .replace(/&quot;/g, "\"")
         .replace(/&#39;/g, "'")
-        .replace(/&apos;/g, "'")
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
         .replace(/&#x27;/g, "'")
         .replace(/&#x2F;/g, "/");
 }
 
-function ppFixImg(u) {
-    if (!u) return "";
 
-    var s = String(u).trim();
+function stripTags(s) {
+    if (!s) return "";
 
-    if (s === "null" || s === "undefined") {
-        return "";
-    }
-
-    s = ppHtmlDecode(s);
-
-    if (s.indexOf("ttps://") === 0) {
-        s = "h" + s;
-    }
-
-    if (s.indexOf("http://") === 0 ||
-        s.indexOf("https://") === 0) {
-        return s;
-    }
-
-    if (s.indexOf("//") === 0) {
-        return "https:" + s;
-    }
-
-    if (s.charAt(0) === "/") {
-        s = s.substring(1);
-    }
-
-    if (s.indexOf("image.tmdb.org") >= 0) {
-        if (s.indexOf("http") !== 0) {
-            return "https://" + s;
-        }
-
-        return s;
-    }
-
-    return TMDB_IMG + "/" + s;
+    return String(s)
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
-function ppSlugify(s) {
+
+// ============================================================
+// SLUGIFY
+// Compatible con QuickJS / GrayJay
+// ============================================================
+
+function slugify(s) {
     if (!s) return "";
 
     return String(s)
         .toLowerCase()
-        .replace(/[áàäâ]/g, "a")
-        .replace(/[éèëê]/g, "e")
-        .replace(/[íìïî]/g, "i")
-        .replace(/[óòöô]/g, "o")
-        .replace(/[úùüû]/g, "u")
+        .replace(/á/g, "a")
+        .replace(/é/g, "e")
+        .replace(/í/g, "i")
+        .replace(/ó/g, "o")
+        .replace(/ú/g, "u")
+        .replace(/ü/g, "u")
         .replace(/ñ/g, "n")
         .replace(/[^a-z0-9]+/g, "-")
         .replace(/^-+|-+$/g, "");
 }
 
-function ppNormalizeTitle(s) {
+
+function normalizeTitle(s) {
     if (!s) return "";
 
-    var x = String(s).toLowerCase();
-
-    x = x
-        .replace(/[áàäâ]/g, "a")
-        .replace(/[éèëê]/g, "e")
-        .replace(/[íìïî]/g, "i")
-        .replace(/[óòöô]/g, "o")
-        .replace(/[úùüû]/g, "u")
-        .replace(/ñ/g, "n");
-
-    x = x.replace(/[^a-z0-9]+/g, "");
-
-    return x;
+    return String(s)
+        .toLowerCase()
+        .replace(/á/g, "a")
+        .replace(/é/g, "e")
+        .replace(/í/g, "i")
+        .replace(/ó/g, "o")
+        .replace(/ú/g, "u")
+        .replace(/ü/g, "u")
+        .replace(/ñ/g, "n")
+        .replace(/[^a-z0-9 ]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
 }
 
 
-// ============================================================
-// PLPRO API
-// ============================================================
+function titleScore(a, b) {
+    a = normalizeTitle(a);
+    b = normalizeTitle(b);
 
-function ppGet(path) {
-    var sep = path.indexOf("?") >= 0 ? "&" : "?";
+    if (!a || !b) return 0;
 
-    var url = IPTV_URL + path +
-        sep +
-        "username=" + encodeURIComponent(IPTV_USER) +
-        "&password=" + encodeURIComponent(IPTV_PASS);
+    if (a == b) return 100;
 
-    var text = ppHttpGet(url, {
-        "User-Agent": "PLPro/8",
-        "Accept": "application/json,text/plain,*/*"
-    });
+    if (a.indexOf(b) >= 0) return 80;
 
-    if (!text) {
-        return null;
-    }
+    if (b.indexOf(a) >= 0) return 75;
 
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        return null;
-    }
-}
+    var aw = a.split(" ");
+    var bw = b.split(" ");
 
-
-// ============================================================
-// CATÁLOGO TMDB
-// ============================================================
-
-function CAT_tmdb(path) {
-    var sep = path.indexOf("?") >= 0 ? "&" : "?";
-
-    var url = TMDB_API +
-        path +
-        sep +
-        "api_key=" + encodeURIComponent(TMDB_KEY);
-
-    var text = CAT_httpGet(url, {
-        "User-Agent": UA,
-        "Accept": "application/json"
-    });
-
-    if (!text) {
-        return null;
-    }
-
-    try {
-        return JSON.parse(text);
-    } catch (e) {
-        return null;
-    }
-}
-
-
-// ============================================================
-// VIDEO PLPRO
-// ============================================================
-
-function ppIsM3u8(url) {
-    if (!url) return false;
-
-    return /\.m3u8(\?|$)/i.test(String(url));
-}
-
-function ppIsMp4(url) {
-    if (!url) return false;
-
-    return /\.mp4(\?|$)/i.test(String(url));
-}
-
-function ppCleanVideoUrl(url) {
-    if (!url) return "";
-
-    var s = ppCleanUrl(url);
-
-    s = s.replace(/^["']+/, "");
-    s = s.replace(/["']+$/, "");
-
-    return s;
-}
-
-function ppDirectHls(url, name) {
-    var u = ppCleanVideoUrl(url);
-
-    if (!u) return null;
-
-    if (!ppIsM3u8(u)) return null;
-
-    try {
-        return new VideoSource({
-            url: u,
-            name: name || "PLPro HLS",
-            type: "HLS",
-            extra: []
-        });
-    } catch (e) {
-        return null;
-    }
-}
-
-function ppDirectMp4(url, name) {
-    var u = ppCleanVideoUrl(url);
-
-    if (!u) return null;
-
-    if (!ppIsMp4(u)) return null;
-
-    try {
-        return new VideoSource({
-            url: u,
-            name: name || "PLPro MP4",
-            type: "MP4",
-            extra: []
-        });
-    } catch (e) {
-        return null;
-    }
-}
-
-
-// ============================================================
-// EXTRACCIÓN HLS/MP4
-// ============================================================
-
-function ppFindM3u8(text) {
-    if (!text) return "";
-
-    var s = String(text);
-
-    var patterns = [
-        /["'](https?:\/\/[^"' ]+\.m3u8[^"' ]*)["']/i,
-        /file\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i,
-        /source\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i,
-        /src\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i,
-        /(https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*)/i
-    ];
-
+    var hits = 0;
     var i;
-
-    for (i = 0; i < patterns.length; i++) {
-        var m = s.match(patterns[i]);
-
-        if (m && m[1]) {
-            return ppCleanVideoUrl(m[1]);
-        }
-    }
-
-    return "";
-}
-
-function ppFindMp4(text) {
-    if (!text) return "";
-
-    var s = String(text);
-
-    var patterns = [
-        /["'](https?:\/\/[^"' ]+\.mp4[^"' ]*)["']/i,
-        /file\s*:\s*["']([^"']+\.mp4[^"']*)["']/i,
-        /source\s*:\s*["']([^"']+\.mp4[^"']*)["']/i,
-        /(https?:\/\/[^\s"'<>]+\.mp4[^\s"'<>]*)/i
-    ];
-
-    var i;
-
-    for (i = 0; i < patterns.length; i++) {
-        var m = s.match(patterns[i]);
-
-        if (m && m[1]) {
-            return ppCleanVideoUrl(m[1]);
-        }
-    }
-
-    return "";
-}
-
-function ppExtractVideo(url, depth) {
-    if (!url) return [];
-
-    if (!depth) depth = 0;
-
-    if (depth > 2) {
-        return [];
-    }
-
-    var direct = ppCleanVideoUrl(url);
-
-    if (ppIsM3u8(direct)) {
-        var h = ppDirectHls(direct, "PLPro HLS");
-
-        return h ? [h] : [];
-    }
-
-    if (ppIsMp4(direct)) {
-        var m = ppDirectMp4(direct, "PLPro MP4");
-
-        return m ? [m] : [];
-    }
-
-    var text = ppHttpGet(direct, {
-        "User-Agent": UA,
-        "Referer": IPTV_URL + "/"
-    });
-
-    if (!text) {
-        return [];
-    }
-
-    var result = [];
-
-    var hls = ppFindM3u8(text);
-
-    if (hls) {
-        var hs = ppDirectHls(hls, "PLPro HLS");
-
-        if (hs) {
-            result.push(hs);
-        }
-    }
-
-    var mp4 = ppFindMp4(text);
-
-    if (mp4) {
-        var ms = ppDirectMp4(mp4, "PLPro MP4");
-
-        if (ms) {
-            result.push(ms);
-        }
-    }
-
-    if (result.length > 0) {
-        return result;
-    }
-
-    var iframe = text.match(
-        /<iframe[^>]+src=["']([^"']+)["']/i
-    );
-
-    if (iframe && iframe[1]) {
-        var iframeUrl = iframe[1];
-
-        if (iframeUrl.indexOf("//") === 0) {
-            iframeUrl = "https:" + iframeUrl;
-        }
-
-        if (iframeUrl.indexOf("http") !== 0) {
-            iframeUrl = IPTV_URL + iframeUrl;
-        }
-
-        return ppExtractVideo(iframeUrl, depth + 1);
-    }
-
-    return [];
-}
-
-
-// ============================================================
-// PLPRO LINK RESOLVER
-// ============================================================
-
-function ppResolveLinks(links) {
-    var sources = [];
-    var i;
-
-    if (!links || !links.length) {
-        return sources;
-    }
-
-    for (i = 0; i < links.length && i < MAX_TRY; i++) {
-        var item = links[i];
-
-        var url = "";
-
-        if (typeof item === "string") {
-            url = item;
-        } else if (item) {
-            url = item.url || item.link || item.src || item.file || "";
-        }
-
-        if (!url) continue;
-
-        var found = ppExtractVideo(url, 0);
-
-        var j;
-
-        for (j = 0; j < found.length; j++) {
-            sources.push(found[j]);
-        }
-
-        if (sources.length > 0) {
-            break;
-        }
-    }
-
-    return sources;
-}
-
-
-// ============================================================
-// PLPRO VIDEO OBJECT
-// ============================================================
-
-function ppMakeVideo(id, title, poster, url) {
-    return new PlatformVideo(
-        new PlatformID("PlPro", id, PID),
-        title || "PlPro",
-        poster || "",
-        url,
-        new PlatformAuthorLink(
-            PPID,
-            "PlPro",
-            IPTV_URL,
-            "",
-            0
-        )
-    );
-}
-
-
-// ============================================================
-// PLPRO DETAIL
-// ============================================================
-
-function ppMakeDetail(id, title, poster, description, sources, url) {
-    var d = new PlatformVideoDetails();
-
-    d.id = new PlatformID("PlPro", id, PID);
-    d.name = title || "PlPro";
-    d.thumbnails = poster ? [poster] : [];
-    d.description = description || "";
-    d.videoSources = new VideoSourceDescriptor(sources || []);
-    d.url = url || "";
-
-    return d;
-}
-
-
-// ============================================================
-// PLPRO HOME
-// ============================================================
-
-function ppHome() {
-    var out = [];
-
-    var data = ppGet("/movies/resume");
-
-    if (!data) {
-        return out;
-    }
-
-    var arr = data.results || data.movies || data.data || data;
-
-    if (!arr || !arr.length) {
-        return out;
-    }
-
-    var i;
-
-    for (i = 0; i < arr.length; i++) {
-        var m = arr[i];
-
-        if (!m) continue;
-
-        var id = m.a || m.id || m._id;
-        var title = m.b || m.title || m.name;
-        var poster = m.d || m.c || m.poster || m.image || "";
-
-        if (!id || !title) continue;
-
-        poster = ppFixImg(poster);
-
-        out.push(
-            ppMakeVideo(
-                "movie_" + id,
-                title,
-                poster,
-                "plpro://movie/" + id
-            )
-        );
-    }
-
-    return out;
-}
-
-
-// ============================================================
-// PLPRO SEARCH
-// ============================================================
-
-function ppSearchRaw(query) {
-    var out = [];
-
-    var q = encodeURIComponent(query);
-
-    var data = ppGet("/movies/resume?search=" + q);
-
-    if (data) {
-        var arr = data.results || data.movies || data.data || data;
-
-        if (arr && arr.length) {
-            var i;
-
-            for (i = 0; i < arr.length; i++) {
-                var m = arr[i];
-
-                if (!m) continue;
-
-                var id = m.a || m.id || m._id;
-                var title = m.b || m.title || m.name;
-                var poster = m.d || m.c || m.poster || m.image || "";
-
-                if (!id || !title) continue;
-
-                out.push(
-                    ppMakeVideo(
-                        "movie_" + id,
-                        title,
-                        ppFixImg(poster),
-                        "plpro://movie/" + id
-                    )
-                );
+    var j;
+
+    for (i = 0; i < aw.length; i++) {
+        if (aw[i].length < 3) continue;
+
+        for (j = 0; j < bw.length; j++) {
+            if (aw[i] == bw[j]) {
+                hits++;
+                break;
             }
         }
     }
 
-    return out;
+    if (aw.length == 0) return 0;
+
+    return Math.floor((hits / aw.length) * 70);
 }
 
 
 // ============================================================
-// CATÁLOGO TMDB -> PLPRO
-//
-// Esta función es SOLO para obtener metadata.
-// No crea PlatformVideo con MxlTv.
+// IMÁGENES MXL / TMDB
 // ============================================================
 
-function CAT_makeCatalogItem(item, type) {
+function CAT_fixImg(u) {
+    if (!u) return "";
+
+    u = String(u).trim();
+
+    if (u.indexOf("ttps://") == 0) {
+        u = "h" + u;
+    }
+
+    if (/^https?:\/\//i.test(u)) {
+        return u;
+    }
+
+    if (u.indexOf("//") == 0) {
+        return "https:" + u;
+    }
+
+    if (u.charAt(0) == "/") {
+        return CAT_TMDB_IMG + u;
+    }
+
+    return u;
+}
+
+
+function CAT_fixBackdrop(u) {
+    if (!u) return "";
+
+    u = String(u).trim();
+
+    if (u.indexOf("ttps://") == 0) {
+        u = "h" + u;
+    }
+
+    if (/^https?:\/\//i.test(u)) {
+        return u;
+    }
+
+    if (u.charAt(0) == "/") {
+        return CAT_TMDB_BACKDROP + u;
+    }
+
+    return u;
+}
+
+
+// ============================================================
+// TMDB
+// ============================================================
+
+function CAT_tmdb(path) {
+    var key = CAT_TMDB_API + path;
+
+    var cached = cacheGet(CAT_CACHE, key);
+
+    if (cached) {
+        return cached;
+    }
+
+    var sep = path.indexOf("?") >= 0 ? "&" : "?";
+
+    var url =
+        CAT_TMDB_API +
+        path +
+        sep +
+        "api_key=" +
+        encodeURIComponent(CAT_TMDB_KEY) +
+        "&language=es-ES";
+
+    var r = httpGet(url);
+
+    if (!r) {
+        return null;
+    }
+
+    var j = safeJson(r);
+
+    if (j) {
+        cachePut(CAT_CACHE, key, j);
+    }
+
+    return j;
+}
+
+
+// ============================================================
+// CONSTRUCCIÓN DE ITEMS DEL CATÁLOGO
+// ============================================================
+
+function CAT_getTitle(item) {
+    if (!item) return "";
+
+    if (item.title) return item.title;
+
+    if (item.name) return item.name;
+
+    if (item.original_title) return item.original_title;
+
+    if (item.original_name) return item.original_name;
+
+    return "";
+}
+
+
+function CAT_getYear(item) {
+    if (!item) return "";
+
+    var d =
+        item.release_date ||
+        item.first_air_date ||
+        "";
+
+    if (!d) return "";
+
+    return String(d).substring(0, 4);
+}
+
+
+function CAT_getImage(item) {
+    if (!item) return "";
+
+    return CAT_fixImg(
+        item.poster_path ||
+        item.backdrop_path ||
+        item.poster ||
+        item.image ||
+        ""
+    );
+}
+
+
+function CAT_getBackdrop(item) {
+    if (!item) return "";
+
+    return CAT_fixBackdrop(
+        item.backdrop_path ||
+        item.poster_path ||
+        ""
+    );
+}
+
+
+function CAT_makeUrl(item) {
+    var id = item.id;
+
+    if (!id) return "";
+
+    var mediaType = item.media_type;
+
+    if (!mediaType) {
+        mediaType =
+            item.first_air_date ||
+            item.name ?
+            "tv" :
+            "movie";
+    }
+
+    if (mediaType == "tv") {
+        return "plpro://tv/" + id;
+    }
+
+    return "plpro://movie/" + id;
+}
+
+
+function CAT_makeItem(item) {
     if (!item) return null;
 
-    var title = item.title || item.name || "";
+    var title = CAT_getTitle(item);
 
     if (!title) return null;
 
-    var date = item.release_date || item.first_air_date || "";
-    var year = date ? date.substring(0, 4) : "";
+    var year = CAT_getYear(item);
 
-    var poster = ppFixImg(item.poster_path);
+    var image = CAT_getImage(item);
+
+    var url = CAT_makeUrl(item);
 
     return {
-        tmdbId: item.id,
+        url: url,
         title: title,
+        image: image,
         year: year,
-        poster: poster,
-        type: type || "movie"
+        tmdbId: item.id,
+        mediaType: item.media_type ||
+            (item.first_air_date ? "tv" : "movie")
     };
 }
 
 
 // ============================================================
-// BUSCAR ID PLPRO A PARTIR DE TMDB
-//
-// Primero intenta búsqueda normal.
-// Si no encuentra, compara títulos normalizados.
-// ============================================================
-
-function CAT_findPlproMovie(item) {
-    if (!item) return null;
-
-    var title = item.title || item.name || "";
-
-    if (!title) return null;
-
-    var results = ppSearchRaw(title);
-
-    if (!results || !results.length) {
-        return null;
-    }
-
-    var wanted = ppNormalizeTitle(title);
-
-    var i;
-
-    for (i = 0; i < results.length; i++) {
-        var v = results[i];
-
-        if (!v) continue;
-
-        var name = v.name || "";
-
-        if (ppNormalizeTitle(name) === wanted) {
-            return v;
-        }
-    }
-
-    return results[0];
-}
-
-
-// ============================================================
-// CATÁLOGO HOME
+// TMDB HOME
 // ============================================================
 
 function CAT_home() {
-    var out = [];
+    var result = [];
 
-    var data = CAT_tmdb(
-        "/trending/all/week?language=es-ES"
-    );
+    var trending =
+        CAT_tmdb("/trending/all/week");
 
-    if (!data || !data.results) {
-        return out;
+    if (trending && trending.results) {
+        for (var i = 0;
+             i < trending.results.length && result.length < 30;
+             i++) {
+
+            var x = trending.results[i];
+
+            if (x.media_type != "movie" &&
+                x.media_type != "tv") {
+                continue;
+            }
+
+            var item = CAT_makeItem(x);
+
+            if (item) {
+                result.push(item);
+            }
+        }
     }
 
-    var i;
+    if (result.length < 10) {
+        var movies =
+            CAT_tmdb("/movie/popular");
 
-    for (i = 0; i < data.results.length; i++) {
-        var item = data.results[i];
+        if (movies && movies.results) {
+            for (var m = 0;
+                 m < movies.results.length && result.length < 40;
+                 m++) {
 
-        if (!item) continue;
+                var mi = movies.results[m];
 
-        var type = item.media_type;
+                mi.media_type = "movie";
 
-        if (type !== "movie" && type !== "tv") {
-            continue;
+                var mov = CAT_makeItem(mi);
+
+                if (mov) result.push(mov);
+            }
         }
-
-        var title = item.title || item.name || "";
-        var poster = ppFixImg(item.poster_path);
-
-        if (!title) continue;
-
-        /*
-         * IMPORTANTE:
-         * Aquí mostramos catálogo TMDB pero mantenemos URL
-         * interna de PlPro para resolver después.
-         */
-
-        var catalogUrl;
-
-        if (type === "tv") {
-            catalogUrl = "cat://tv/" + item.id;
-        } else {
-            catalogUrl = "cat://movie/" + item.id;
-        }
-
-        out.push(
-            ppMakeVideo(
-                "cat_" + type + "_" + item.id,
-                title,
-                poster,
-                catalogUrl
-            )
-        );
     }
 
-    return out;
+    if (result.length < 10) {
+        var tv =
+            CAT_tmdb("/tv/popular");
+
+        if (tv && tv.results) {
+            for (var t = 0;
+                 t < tv.results.length && result.length < 40;
+                 t++) {
+
+                var ti = tv.results[t];
+
+                ti.media_type = "tv";
+
+                var show = CAT_makeItem(ti);
+
+                if (show) result.push(show);
+            }
+        }
+    }
+
+    return result;
 }
 
 
 // ============================================================
-// CATÁLOGO SEARCH
+// TMDB SEARCH
 // ============================================================
 
 function CAT_search(query) {
-    var out = [];
+    if (!query) return [];
 
-    if (!query) {
-        return out;
+    var result = [];
+
+    var q =
+        CAT_tmdb(
+            "/search/multi?query=" +
+            encodeURIComponent(query)
+        );
+
+    if (!q || !q.results) {
+        return result;
     }
 
-    var data = CAT_tmdb(
-        "/search/multi?language=es-ES&query=" +
-        encodeURIComponent(query)
-    );
+    for (var i = 0;
+         i < q.results.length && result.length < 50;
+         i++) {
 
-    if (!data || !data.results) {
-        return out;
-    }
+        var x = q.results[i];
 
-    var i;
-
-    for (i = 0; i < data.results.length; i++) {
-        var item = data.results[i];
-
-        if (!item) continue;
-
-        var type = item.media_type;
-
-        if (type !== "movie" && type !== "tv") {
+        if (x.media_type != "movie" &&
+            x.media_type != "tv") {
             continue;
         }
 
-        var title = item.title || item.name || "";
+        var item = CAT_makeItem(x);
 
-        if (!title) continue;
+        if (item) {
+            result.push(item);
+        }
+    }
 
-        var url;
+    return result;
+}
 
-        if (type === "tv") {
-            url = "cat://tv/" + item.id;
-        } else {
-            url = "cat://movie/" + item.id;
+
+// ============================================================
+// TMDB DETAILS
+// ============================================================
+
+function CAT_movieDetails(id) {
+    return CAT_tmdb(
+        "/movie/" +
+        encodeURIComponent(id)
+    );
+}
+
+
+function CAT_tvDetails(id) {
+    return CAT_tmdb(
+        "/tv/" +
+        encodeURIComponent(id)
+    );
+}
+
+
+// ============================================================
+// TMDB EPISODES
+// ============================================================
+
+function CAT_getEpisodes(tvId, season) {
+    var j =
+        CAT_tmdb(
+            "/tv/" +
+            encodeURIComponent(tvId) +
+            "/season/" +
+            encodeURIComponent(season)
+        );
+
+    if (!j || !j.episodes) {
+        return [];
+    }
+
+    return j.episodes;
+}
+
+
+// ============================================================
+// PLPRO - HTTP
+// ============================================================
+
+function PP_get(path) {
+    var key = PP_URL + path;
+
+    var cached = cacheGet(PP_CACHE, key);
+
+    if (cached) {
+        return cached;
+    }
+
+    var url =
+        PP_URL +
+        "/" +
+        String(path).replace(/^\/+/, "");
+
+    var headers = {
+        "User-Agent": UA,
+        "Accept": "*/*"
+    };
+
+    var r = httpGet(url, headers);
+
+    if (!r) return null;
+
+    cachePut(PP_CACHE, key, r);
+
+    return r;
+}
+
+
+// ============================================================
+// PLPRO - BUSCAR PELÍCULA
+// ============================================================
+
+function PP_findMovie(title, year) {
+    if (!title) return null;
+
+    var slug = slugify(title);
+
+    var candidates = [];
+
+    candidates.push(
+        "/search/" +
+        encodeURIComponent(title)
+    );
+
+    if (slug && slug != title) {
+        candidates.push(
+            "/search/" +
+            encodeURIComponent(slug)
+        );
+    }
+
+    var best = null;
+    var bestScore = 0;
+
+    for (var i = 0;
+         i < candidates.length;
+         i++) {
+
+        var r = PP_get(candidates[i]);
+
+        if (!r) continue;
+
+        var j = safeJson(r);
+
+        if (j) {
+            var arr = [];
+
+            if (j.results) arr = j.results;
+            else if (j.data) arr = j.data;
+            else if (j.movies) arr = j.movies;
+
+            for (var k = 0; k < arr.length; k++) {
+                var x = arr[k];
+
+                var xt =
+                    x.title ||
+                    x.name ||
+                    x.movie_title ||
+                    "";
+
+                var score =
+                    titleScore(title, xt);
+
+                if (year) {
+                    var xy =
+                        x.year ||
+                        x.release_year ||
+                        x.release_date ||
+                        "";
+
+                    if (String(xy).indexOf(String(year)) >= 0) {
+                        score += 20;
+                    }
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = x;
+                }
+            }
+
+            if (best) {
+                return best;
+            }
         }
 
-        out.push(
-            ppMakeVideo(
-                "cat_" + type + "_" + item.id,
-                title,
-                ppFixImg(item.poster_path),
-                url
-            )
+        var html = String(r);
+
+        var ids =
+            html.match(
+                /(?:movie|pelicula)[^0-9]{0,30}([0-9]+)/ig
+            );
+
+        if (ids && ids.length) {
+            return {
+                id: ids[0].replace(/[^0-9]/g, ""),
+                title: title
+            };
+        }
+    }
+
+    return best;
+}
+
+
+// ============================================================
+// PLPRO - BUSCAR SERIE
+// ============================================================
+
+function PP_findSeries(title, year) {
+    if (!title) return null;
+
+    var slug = slugify(title);
+
+    var candidates = [];
+
+    candidates.push(
+        "/search/" +
+        encodeURIComponent(title)
+    );
+
+    if (slug) {
+        candidates.push(
+            "/search/" +
+            encodeURIComponent(slug)
         );
+    }
+
+    var best = null;
+    var bestScore = 0;
+
+    for (var i = 0;
+         i < candidates.length;
+         i++) {
+
+        var r = PP_get(candidates[i]);
+
+        if (!r) continue;
+
+        var j = safeJson(r);
+
+        if (j) {
+            var arr = [];
+
+            if (j.results) arr = j.results;
+            else if (j.data) arr = j.data;
+            else if (j.series) arr = j.series;
+
+            for (var k = 0; k < arr.length; k++) {
+                var x = arr[k];
+
+                var xt =
+                    x.title ||
+                    x.name ||
+                    x.series_title ||
+                    "";
+
+                var score =
+                    titleScore(title, xt);
+
+                if (year) {
+                    var xy =
+                        x.year ||
+                        x.release_year ||
+                        x.first_air_date ||
+                        "";
+
+                    if (String(xy).indexOf(String(year)) >= 0) {
+                        score += 20;
+                    }
+                }
+
+                if (score > bestScore) {
+                    bestScore = score;
+                    best = x;
+                }
+            }
+
+            if (best) {
+                return best;
+            }
+        }
+    }
+
+    return best;
+}
+
+
+// ============================================================
+// PLPRO - LINKS
+// ============================================================
+
+function PP_extractLinks(data) {
+    var links = [];
+
+    if (!data) return links;
+
+    if (typeof data == "object") {
+        var text = JSON.stringify(data);
+
+        var a =
+            text.match(
+                /https?:[^"'\s\\]+/ig
+            );
+
+        if (a) {
+            for (var i = 0; i < a.length; i++) {
+                links.push(
+                    cleanUrl(
+                        a[i]
+                            .replace(/\\u0026/g, "&")
+                            .replace(/\\\//g, "/")
+                    )
+                );
+            }
+        }
+    } else {
+        var s = String(data);
+
+        var b =
+            s.match(
+                /https?:[^"' <>\r\n]+/ig
+            );
+
+        if (b) {
+            for (var j = 0; j < b.length; j++) {
+                links.push(cleanUrl(b[j]));
+            }
+        }
+    }
+
+    return dedup(links);
+}
+
+
+// ============================================================
+// VIDEO DETECTION
+// ============================================================
+
+function isM3u8(url) {
+    if (!url) return false;
+
+    return /\.m3u8(?:$|[?#])/i.test(
+        String(url)
+    );
+}
+
+
+function isMp4(url) {
+    if (!url) return false;
+
+    return /\.mp4(?:$|[?#])/i.test(
+        String(url)
+    );
+}
+
+
+function dedup(arr) {
+    var out = [];
+    var seen = {};
+
+    if (!arr) return out;
+
+    for (var i = 0; i < arr.length; i++) {
+        var x = arr[i];
+
+        if (!x) continue;
+
+        x = String(x);
+
+        if (seen[x]) continue;
+
+        seen[x] = true;
+
+        out.push(x);
     }
 
     return out;
@@ -817,281 +968,601 @@ function CAT_search(query) {
 
 
 // ============================================================
-// DETALLE PELÍCULA PLPRO
+// PLPRO - EXTRAER M3U8
 // ============================================================
 
-function ppMovieDetails(id, posterOverride, titleOverride) {
-    var data = ppGet("/movies/" + id);
+function findM3u8(text) {
+    if (!text) return [];
 
-    if (!data) {
-        return null;
-    }
-
-    var title =
-        titleOverride ||
-        data.b ||
-        data.title ||
-        data.name ||
-        "Película";
-
-    var poster =
-        posterOverride ||
-        ppFixImg(
-            data.d ||
-            data.c ||
-            data.poster ||
-            data.image ||
-            ""
+    var a =
+        String(text).match(
+            /https?:\/\/[^"' <>\r\n\\]+\.m3u8[^"' <>\r\n\\]*/ig
         );
 
-    var linksData = ppGet("/movies/" + id + "/links");
-
-    var links = [];
-
-    if (linksData) {
-        links =
-            linksData.links ||
-            linksData.results ||
-            linksData.data ||
-            linksData;
-    }
-
-    var sources = ppResolveLinks(links);
-
-    var description = "";
-
-    if (data.description) {
-        description = data.description;
-    }
-
-    if (!sources.length) {
-        description +=
-            "\n\n[PlPro] No se encontró una fuente reproducible.";
-    }
-
-    return ppMakeDetail(
-        "movie_" + id,
-        title,
-        poster,
-        description,
-        sources,
-        "plpro://movie/" + id
-    );
+    return dedup(a || []);
 }
 
 
 // ============================================================
-// RESOLVER CAT MOVIE
+// PLPRO - EXTRAER MP4
 // ============================================================
 
-function CAT_movieDetails(tmdbId) {
-    var tmdb = CAT_tmdb(
-        "/movie/" + tmdbId + "?language=es-ES"
-    );
+function findMp4(text) {
+    if (!text) return [];
 
-    if (!tmdb) {
-        return null;
-    }
-
-    var title = tmdb.title || tmdb.original_title || "";
-
-    var match = CAT_findPlproMovie(tmdb);
-
-    if (!match) {
-        return ppMakeDetail(
-            "cat_movie_" + tmdbId,
-            title,
-            ppFixImg(tmdb.poster_path),
-            "Título encontrado en catálogo, pero no se encontró coincidencia en PlPro.",
-            [],
-            "cat://movie/" + tmdbId
+    var a =
+        String(text).match(
+            /https?:\/\/[^"' <>\r\n\\]+\.mp4[^"' <>\r\n\\]*/ig
         );
+
+    return dedup(a || []);
+}
+
+
+// ============================================================
+// PLPRO - EXTRACTOR PRINCIPAL
+// ============================================================
+
+function PP_extractVideo(data) {
+    var links = [];
+
+    if (!data) return links;
+
+    var text =
+        typeof data == "string" ?
+        data :
+        JSON.stringify(data);
+
+    var hls =
+        findM3u8(text);
+
+    var mp4 =
+        findMp4(text);
+
+    for (var i = 0; i < hls.length; i++) {
+        links.push({
+            url: hls[i],
+            type: "hls"
+        });
     }
 
-    /*
-     * Recuperamos el ID real de PlPro.
-     */
-    var pid = "";
-
-    if (match.id) {
-        pid = match.id;
+    for (var j = 0; j < mp4.length; j++) {
+        links.push({
+            url: mp4[j],
+            type: "mp4"
+        });
     }
 
-    if (!pid && match.url) {
-        var m = String(match.url).match(/plpro:\/\/movie\/([^\/]+)/);
+    return links;
+}
 
-        if (m) {
-            pid = m[1];
+
+// ============================================================
+// PLPRO - PELÍCULA
+// ============================================================
+
+function PP_getMovieLinks(id) {
+    if (!id) return [];
+
+    var r =
+        PP_get(
+            "/movies/" +
+            encodeURIComponent(id) +
+            "/links"
+        );
+
+    if (!r) return [];
+
+    return PP_extractVideo(r);
+}
+
+
+// ============================================================
+// PLPRO - EPISODIO
+// ============================================================
+
+function PP_getEpisodeLinks(
+    id,
+    season,
+    episode
+) {
+    if (!id) return [];
+
+    var r =
+        PP_get(
+            "/series/" +
+            encodeURIComponent(id) +
+            "/links/" +
+            encodeURIComponent(season) +
+            "/" +
+            encodeURIComponent(episode)
+        );
+
+    if (!r) return [];
+
+    return PP_extractVideo(r);
+}
+
+
+// ============================================================
+// JKANIME
+// ============================================================
+
+function JK_search(query) {
+    if (!query) return [];
+
+    var url =
+        JK_URL +
+        "/buscar/" +
+        encodeURIComponent(
+            slugify(query)
+        );
+
+    var r = httpGet(url);
+
+    if (!r) return [];
+
+    var out = [];
+
+    var re =
+        /href=["']([^"']+)["'][^>]*>([^<]+)/ig;
+
+    var m;
+
+    while ((m = re.exec(String(r))) != null) {
+        var href = m[1];
+        var title = stripTags(m[2]);
+
+        if (!href || !title) continue;
+
+        if (href.indexOf("http") != 0) {
+            href = absoluteUrl(
+                JK_URL,
+                href
+            );
+        }
+
+        out.push({
+            url: href,
+            title: title,
+            image: ""
+        });
+
+        if (out.length >= 20) break;
+    }
+
+    return out;
+}
+
+
+// ============================================================
+// GRAYJAY - HOME
+// ============================================================
+
+source.getHome = function () {
+    clearLog();
+
+    var items = CAT_home();
+
+    return items;
+};
+
+
+// ============================================================
+// GRAYJAY - SEARCH
+// ============================================================
+
+source.search = function (query) {
+    clearLog();
+
+    var items = CAT_search(query);
+
+    if (items.length == 0) {
+        return JK_search(query);
+    }
+
+    return items;
+};
+
+
+// ============================================================
+// GRAYJAY - MOVIE DETAILS
+// ============================================================
+
+function makeMovieDetail(item) {
+    var id = item.tmdbId;
+
+    var d =
+        CAT_movieDetails(id);
+
+    var title =
+        CAT_getTitle(d) ||
+        item.title;
+
+    var year =
+        CAT_getYear(d) ||
+        item.year;
+
+    var image =
+        CAT_getImage(d) ||
+        item.image;
+
+    return {
+        title: title,
+        image: image,
+        year: year,
+        description:
+            d && d.overview ?
+            d.overview :
+            "",
+        url:
+            "plpro://movie/" +
+            id,
+        tmdbId: id
+    };
+}
+
+
+// ============================================================
+// GRAYJAY - TV DETAILS
+// ============================================================
+
+function makeTvDetail(item) {
+    var id = item.tmdbId;
+
+    var d =
+        CAT_tvDetails(id);
+
+    var title =
+        CAT_getTitle(d) ||
+        item.title;
+
+    var image =
+        CAT_getImage(d) ||
+        item.image;
+
+    var seasons = [];
+
+    if (d && d.seasons) {
+        for (var i = 0;
+             i < d.seasons.length;
+             i++) {
+
+            var s = d.seasons[i];
+
+            if (!s) continue;
+
+            if (s.season_number === undefined) {
+                continue;
+            }
+
+            if (s.season_number == 0) {
+                continue;
+            }
+
+            seasons.push({
+                season: s.season_number,
+                name:
+                    s.name ||
+                    ("Temporada " +
+                     s.season_number),
+                image:
+                    CAT_fixImg(
+                        s.poster_path
+                    )
+            });
         }
     }
 
-    if (!pid) {
-        return null;
-    }
-
-    return ppMovieDetails(
-        pid,
-        ppFixImg(tmdb.poster_path),
-        title
-    );
+    return {
+        title: title,
+        image: image,
+        description:
+            d && d.overview ?
+            d.overview :
+            "",
+        url:
+            "plpro://tv/" +
+            id,
+        tmdbId: id,
+        seasons: seasons
+    };
 }
 
 
 // ============================================================
-// DETAILS
+// GRAYJAY - DETAILS
 // ============================================================
 
-function doDetails(url) {
+source.getDetails = function (url) {
+    clearLog();
 
-    if (!url) {
-        return null;
+    if (!url) return null;
+
+    var s = String(url);
+
+    var mMovie =
+        s.match(
+            /^plpro:\/\/movie\/([0-9]+)$/i
+        );
+
+    if (mMovie) {
+        return makeMovieDetail({
+            tmdbId: mMovie[1],
+            title: ""
+        });
     }
 
-    /*
-     * Catálogo TMDB
-     */
-    var m = String(url).match(/^cat:\/\/movie\/(\d+)$/i);
+    var mTv =
+        s.match(
+            /^plpro:\/\/tv\/([0-9]+)$/i
+        );
 
-    if (m) {
-        return CAT_movieDetails(m[1]);
-    }
-
-    /*
-     * PlPro directo
-     */
-    m = String(url).match(/^plpro:\/\/movie\/(.+)$/i);
-
-    if (m) {
-        return ppMovieDetails(m[1], "", "");
+    if (mTv) {
+        return makeTvDetail({
+            tmdbId: mTv[1],
+            title: ""
+        });
     }
 
     return null;
-}
-
-
-// ============================================================
-// SEARCH
-// ============================================================
-
-function doSearch(query) {
-    /*
-     * IMPORTANTE:
-     * No dependemos de PlPro para que aparezca el catálogo.
-     * Primero TMDB/MXL.
-     */
-
-    var results = CAT_search(query);
-
-    /*
-     * Si TMDB no devuelve nada, intentamos PlPro directamente.
-     */
-    if (!results.length) {
-        results = ppSearchRaw(query);
-    }
-
-    return results;
-}
-
-
-// ============================================================
-// HOME
-// ============================================================
-
-function doHome() {
-    var results = CAT_home();
-
-    /*
-     * Fallback: si falla TMDB, el plugin sigue mostrando
-     * el catálogo propio de PlPro.
-     */
-    if (!results.length) {
-        results = ppHome();
-    }
-
-    return results;
-}
-
-
-// ============================================================
-// BINDINGS GRAYJAY
-// ============================================================
-
-source.setSettings = function(settings) {
-    _settings = settings || {};
 };
 
-source.enable = function() {
-    return true;
-};
 
-source.getSearchCapabilities = function() {
-    return [
-        new SearchCapability(
-            "query",
-            "Buscar",
-            "text"
-        )
-    ];
-};
+// ============================================================
+// GRAYJAY - MOVIE VIDEO
+// ============================================================
 
-source.search = function(query) {
-    try {
-        return new ContentPager(
-            doSearch(query)
+source.getVideo = function (url) {
+    clearLog();
+
+    var s = String(url);
+
+    var m =
+        s.match(
+            /^plpro:\/\/movie\/([0-9]+)$/i
         );
-    } catch (e) {
-        return new ContentPager([]);
-    }
-};
 
-source.isContentDetailsUrl = function(url) {
-    if (!url) return false;
+    if (!m) return [];
 
-    return /^cat:\/\//i.test(url) ||
-           /^plpro:\/\//i.test(url);
-};
+    var tmdbId = m[1];
 
-source.isVideoDetailsUrl = function(url) {
-    if (!url) return false;
+    var d =
+        CAT_movieDetails(tmdbId);
 
-    return /^cat:\/\//i.test(url) ||
-           /^plpro:\/\//i.test(url);
-};
+    if (!d) return [];
 
-source.getVideoDetails = function(url) {
-    try {
-        return doDetails(url);
-    } catch (e) {
-        return null;
-    }
-};
+    var title =
+        CAT_getTitle(d);
 
-source.getHome = function() {
-    try {
-        return new ContentPager(
-            doHome()
+    var year =
+        CAT_getYear(d);
+
+    log(
+        "MXL/TMDB: " +
+        title +
+        " (" +
+        year +
+        ")"
+    );
+
+    // --------------------------------------------------------
+    // AQUÍ MXL/TMDB TERMINA.
+    // A PARTIR DE AQUÍ TODO ES PLPRO.ORG.
+    // --------------------------------------------------------
+
+    var found =
+        PP_findMovie(
+            title,
+            year
         );
-    } catch (e) {
-        return new ContentPager([]);
+
+    if (!found) {
+        log(
+            "PlPro: película no encontrada"
+        );
+
+        return [];
     }
-};
 
-source.isChannelUrl = function(url) {
-    return false;
-};
+    var ppId =
+        found.id ||
+        found.movie_id ||
+        found.movieId;
 
-source.searchSuggestions = function(query) {
-    return [];
-};
+    if (!ppId) {
+        log(
+            "PlPro: ID no encontrado"
+        );
 
-source.getContentRecommendations = function(url) {
-    return [];
-};
-
-source.getContentDetails = function(url) {
-    try {
-        return doDetails(url);
-    } catch (e) {
-        return null;
+        return [];
     }
+
+    log(
+        "PlPro ID: " +
+        ppId
+    );
+
+    return PP_getMovieLinks(
+        ppId
+    );
 };
+
+
+// ============================================================
+// GRAYJAY - EPISODE VIDEO
+// ============================================================
+
+source.getEpisodeVideo =
+function (
+    url,
+    season,
+    episode
+) {
+    clearLog();
+
+    var s = String(url);
+
+    var m =
+        s.match(
+            /^plpro:\/\/tv\/([0-9]+)$/i
+        );
+
+    if (!m) return [];
+
+    var tmdbId = m[1];
+
+    var d =
+        CAT_tvDetails(
+            tmdbId
+        );
+
+    if (!d) return [];
+
+    var title =
+        CAT_getTitle(d);
+
+    var year =
+        CAT_getYear(d);
+
+    log(
+        "MXL/TMDB: " +
+        title +
+        " S" +
+        season +
+        "E" +
+        episode
+    );
+
+    // --------------------------------------------------------
+    // BUSCAR LA SERIE EN PLPRO.ORG
+    // --------------------------------------------------------
+
+    var found =
+        PP_findSeries(
+            title,
+            year
+        );
+
+    if (!found) {
+        log(
+            "PlPro: serie no encontrada"
+        );
+
+        return [];
+    }
+
+    var ppId =
+        found.id ||
+        found.series_id ||
+        found.seriesId;
+
+    if (!ppId) {
+        log(
+            "PlPro: ID de serie no encontrado"
+        );
+
+        return [];
+    }
+
+    log(
+        "PlPro Series ID: " +
+        ppId
+    );
+
+    return PP_getEpisodeLinks(
+        ppId,
+        season,
+        episode
+    );
+};
+
+
+// ============================================================
+// RECOMMENDATIONS
+// ============================================================
+
+source.getRecommendations =
+function () {
+    var r =
+        CAT_tmdb(
+            "/movie/popular"
+        );
+
+    var out = [];
+
+    if (!r || !r.results) {
+        return out;
+    }
+
+    for (var i = 0;
+         i < r.results.length && i < 30;
+         i++) {
+
+        var x = r.results[i];
+
+        x.media_type = "movie";
+
+        var item =
+            CAT_makeItem(x);
+
+        if (item) {
+            out.push(item);
+        }
+    }
+
+    return out;
+};
+
+
+// ============================================================
+// CHANNEL
+// ============================================================
+
+source.getChannel =
+function () {
+    return {
+        id: PID,
+        name: "PlPro",
+        url: PP_URL
+    };
+};
+
+
+// ============================================================
+// SETTINGS
+// ============================================================
+
+source.getSettings =
+function () {
+    return _settings;
+};
+
+
+// ============================================================
+// DEBUG
+// ============================================================
+
+source.getDebug =
+function () {
+    return _debugLog;
+};
+
+
+// ============================================================
+// CAPABILITIES
+// ============================================================
+
+source.getSearchCapabilities =
+function () {
+    return {
+        types: [1, 2],
+        allowMovies: true,
+        allowSeries: true
+    };
+};
+
+
+// ============================================================
+// FIN
+// ============================================================
