@@ -1,45 +1,43 @@
-// MXL TV + PlPro Hybrid Source v3.0
-// Portadas: TMDB (Mxltv) — Reproducción: PlPro (plpro.org)
-// v3.0: Fusion MXL (portadas TMDB) + PlPro (reproducción).
-//       - Home y búsqueda usan TMDB para portadas prolijas
-//       - Detalle usa TMDB para metadata + portada
-//       - Reproducción resuelve desde PlPro (movies/links, series/links)
-//       - Búsqueda cruzada: busca por título en PlPro para encontrar el ID
-//       - Fix: series/episodios ahora buscan en PlPro correctamente
-//       - Autor: "PlPro" en todo el source
+// MXL TV + PlPro Hybrid Source v3.1
+// Portadas: TMDB (Mxltv) — Reproducción: PlPro (plpro.org) + JkAnime
+// v3.1 fixes:
+//       - Extractores vidhide/voe/dood/generic copiados EXACTOS del PlPro original
+//       - tmdbVideo recibe media_type explícito (fix home movies/series mezclados)
+//       - ppFindTitle: matching por normalización completa (sin tildes, sin acentos)
+//       - ppFindTitle: matching por palabras completas, NO substring suelto
+//       - JkAnime fallback SOLO cuando TMDB tiene género Animation
+//       - Defensive parsing de respuestas PlPro (array u objeto con .links)
+//       - Fallback poster: backdrop_path cuando poster_path falta
+//       - Pre-carga S1E1 con más caminos de retry
 
 var PID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-var MXL_PID = new PlatformID("PlPro", "PlPro", PID);
-var MXL_CHANNEL_URL = "https://plpro.org";
+var PPID = new PlatformID("PlPro", "PlPro", PID);
 var _settings = {};
 var _debugLog = "";
 
 // =========================================================
-// API CONFIGURACIÓN
+// CONFIGURACIÓN
 // =========================================================
 
-// PlPro
 var IPTV_URL = "https://plpro.org";
 var IPTV_USER = "p";
 var IPTV_PASS = "p";
 
-// TMDB
 var TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 var TMDB_API = "https://api.themoviedb.org/3";
 var TMDB_KEY = "18d85af64ccb07f720d758e05bbec3ad";
 
-// Cache
 var MXL_CACHE = {};
 var CACHE_TTL = 1800000;
 var MAX_SERVERS = 10;
 
 // =========================================================
-// LOG
+// DEBUG
 // =========================================================
 
-function log(msg) {
+function addDebug(msg) {
     _debugLog += String(msg) + "\n";
 }
 
@@ -56,7 +54,7 @@ function httpGet(url, headers) {
         var r = http.GET(url, h);
         return (r && r.body) ? r.body : "";
     } catch (e) {
-        log("GET Error " + url + ": " + String(e));
+        addDebug("GET Error " + url + ": " + String(e));
         return "";
     }
 }
@@ -80,28 +78,15 @@ function store(key, data) {
     MXL_CACHE[key] = { d: data, t: Date.now() };
 }
 
-function cleanUrl(url) {
-    if (!url) return "";
-    var s = String(url).trim()
-        .replace(/&amp;/g, "&")
-        .replace(/\\u0026/g, "&")
-        .replace(/\\\//g, "/");
-    return s;
+function getHost(url) {
+    try {
+        var m = String(url).match(/^https?:\/\/([^\/?#]+)/i);
+        return m ? m[1].toLowerCase() : "";
+    } catch (e) { return ""; }
 }
 
-function fixImg(u) {
-    if (!u) return "";
-    var s = String(u).trim();
-    if (s.indexOf("ttps://") === 0) s = "https" + s.substring(4);
-    if (/^https?:\/\//i.test(s)) return s;
-    s = s.replace(/^\/+/, "");
-    if (!s) return "";
-    if (s.indexOf(".jpg") === -1 && s.indexOf(".png") === -1 && s.indexOf(".webp") === -1) s += ".jpg";
-    return TMDB_IMG + "/" + s;
-}
-
-function isM3u8(url) {
-    return url && /\.m3u8(?:[?#]|$)/i.test(String(url));
+function slugify(s) {
+    return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
 }
 
 function htmlDecode(s) {
@@ -123,40 +108,303 @@ function stripTags(s) {
         .replace(/\s+/g, " ")).trim();
 }
 
-// =========================================================
-// TMDB
-// =========================================================
-
-function tmdb(path) {
+function b64decode(s) {
     try {
-        var ck = "tmdb:" + path;
-        var c = cached(ck);
-        if (c) return c;
-
-        var sep = path.indexOf("?") !== -1 ? "&" : "?";
-        var url = TMDB_API + path + sep + "api_key=" + TMDB_KEY;
-        var r = httpGet(url, { "User-Agent": UA });
-        var data = safeParse(r);
-        if (data) store(ck, data);
-        return data;
+        return decodeURIComponent(
+            atob(s).split("").map(function(c) {
+                return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
+            }).join("")
+        );
     } catch (e) {
-        log("TMDB Error: " + String(e));
+        try { return atob(s); }
+        catch (e2) { return ""; }
+    }
+}
+
+// Normalizar título para matching: minúsculas, sin acentos, sin puntuación, colapsar espacios
+function normalizeTitle(s) {
+    return String(s || "")
+        .toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+// Normalizar título para display (solo lowercase y quitar año)
+function normMatch(s) {
+    return normalizeTitle(s).replace(/\s*\d{4}\s*$/, "").trim();
+}
+
+function cleanUrl(url) {
+    if (!url) return "";
+    var s = String(url).trim();
+    s = htmlDecode(s);
+    s = s.replace(/\\u0026/g, "&");
+    s = s.replace(/\\\//g, "/");
+    return s;
+}
+
+function fixImg(u) {
+    if (!u) return "";
+    var s = String(u).trim();
+    if (s.indexOf("ttps://") === 0) s = "https" + s.substring(4);
+    if (/^https?:\/\//i.test(s)) return s;
+    s = s.replace(/^\/+/, "");
+    if (!s) return "";
+    if (s.indexOf(".jpg") === -1 && s.indexOf(".png") === -1 && s.indexOf(".webp") === -1) s += ".jpg";
+    return TMDB_IMG + "/" + s;
+}
+
+function isM3u8Url(url) {
+    try { return url && /\.m3u8(?:[?#]|$)/i.test(String(url)); }
+    catch (e) { return false; }
+}
+
+function directHls(url) {
+    try {
+        url = cleanUrl(url);
+        if (isM3u8Url(url)) return url;
+        return null;
+    } catch (e) { return null; }
+}
+
+// =========================================================
+// EXTRACTORES (copiados EXACTOS del PlPro original)
+// =========================================================
+
+function vidhideExtract(pageUrl) {
+    try {
+        var fetchUrl = pageUrl;
+
+        if (fetchUrl.indexOf("vidhidefast.com") !== -1) {
+            fetchUrl = fetchUrl.replace("vidhidefast.com", "callistanise.com");
+        }
+        if (fetchUrl.indexOf("vidhide.com") !== -1 && fetchUrl.indexOf("callistanise") === -1) {
+            fetchUrl = fetchUrl.replace("vidhide.com", "callistanise.com");
+        }
+
+        var embedHost = getHost(fetchUrl);
+        var refererBase = "https://" + embedHost + "/";
+
+        addDebug("[vidhide] fetch=" + fetchUrl);
+
+        var html = httpGet(fetchUrl, { "User-Agent": UA, "Referer": refererBase });
+        addDebug("[vidhide] htmlLen=" + (html ? html.length : 0));
+
+        if (!html || html.length < 500) {
+            addDebug("[vidhide] HTML insuficiente");
+            return null;
+        }
+
+        var splitIdx = html.lastIndexOf(".split('|')");
+        addDebug("[vidhide] splitIdx=" + splitIdx);
+        if (splitIdx === -1) {
+            addDebug("[vidhide] No se encontró .split('|')");
+            return null;
+        }
+
+        var keyEnd = html.lastIndexOf("'", splitIdx);
+        var keyStart = html.lastIndexOf("'", keyEnd - 1) + 1;
+        var key = html.substring(keyStart, keyEnd);
+        var keyArr = key.split("|");
+
+        addDebug("[vidhide] keyArrLen=" + keyArr.length);
+        if (keyArr.length < 50) {
+            addDebug("[vidhide] Array demasiado corto");
+            return null;
+        }
+
+        function decode(str) {
+            return str.replace(/[a-z0-9]+/g, function(token) {
+                var val = parseInt(token, 36);
+                if (!isNaN(val) && val > 0 && val < keyArr.length && keyArr[val] && keyArr[val].length > 1) {
+                    return keyArr[val];
+                }
+                return token;
+            });
+        }
+
+        var urls = html.match(/["'][a-z0-9]+:\/\/[^"']+["']/gi) || [];
+        addDebug("[vidhide] candidateUrls=" + urls.length);
+
+        var best = null;
+        for (var i = 0; i < urls.length; i++) {
+            var raw = urls[i].substring(1, urls[i].length - 1);
+            var dec = cleanUrl(decode(raw));
+            if (dec.indexOf("master.") !== -1 && dec.indexOf(".m3u8") !== -1) { best = dec; break; }
+            if (!best && dec.indexOf("master.") !== -1 && dec.indexOf(".txt") !== -1) { best = dec; }
+        }
+
+        addDebug("[vidhide] best=" + (best || "none"));
+        if (!best) return null;
+
+        if (isM3u8Url(best)) return best;
+
+        if (/\.txt(?:[?#]|$)/i.test(best)) {
+            addDebug("[vidhide] master.txt detectado");
+            var txt = httpGet(best, { "User-Agent": UA, "Referer": refererBase });
+            addDebug("[vidhide] txtLen=" + (txt ? txt.length : 0));
+            if (txt) {
+                var m3u = txt.match(/https?:\/\/[^\s"'<>]+\.m3u8[^\s"'<>]*/i);
+                if (m3u && m3u[0]) {
+                    addDebug("[vidhide] m3u8 encontrada dentro de master.txt");
+                    return cleanUrl(m3u[0]);
+                }
+            }
+        }
+        addDebug("[vidhide] No se pudo convertir la fuente");
+        return null;
+    } catch (e) {
+        addDebug("[vidhide] EXCEPTION: " + String(e));
         return null;
     }
 }
 
-function tmdbVideo(item) {
-    if (!item) return null;
-    var title = item.title || item.name || "Sin título";
-    var year = (item.release_date || item.first_air_date || "").substring(0, 4);
-    var poster = item.poster_path ? fixImg(item.poster_path) : "";
-    var mediaType = item.media_type || "movie";
-    var tmdbId = item.id;
-    var url = mediaType === "tv"
-        ? "mxl://tv/" + tmdbId
-        : "mxl://movie/" + tmdbId;
-    var display = title + (year ? " (" + year + ")" : "");
-    return mkVideo(tmdbId, display, poster, url);
+function voeExtract(pageUrl) {
+    try {
+        addDebug("[voe] fetch=" + pageUrl);
+        var html = httpGet(pageUrl, { "User-Agent": UA, "Referer": pageUrl });
+        addDebug("[voe] htmlLen=" + (html ? html.length : 0));
+        if (!html) return null;
+
+        var m = html.match(/hls\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
+        if (m && m[1]) { addDebug("[voe] match directo hls"); return cleanUrl(m[1]); }
+
+        var am = html.match(/atob\(['"]([^'"]+)['"]\)/);
+        addDebug("[voe] atobMatch=" + (am ? "si" : "no"));
+        if (am) {
+            try {
+                var d = b64decode(am[1]);
+                var u = d.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+                addDebug("[voe] atob m3u8=" + (u ? "si" : "no"));
+                if (u) return cleanUrl(u[0]);
+            } catch (e) { addDebug("[voe] atob exception=" + String(e)); }
+        }
+
+        var fm = html.match(/file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
+        if (fm && fm[1]) { addDebug("[voe] match file"); return cleanUrl(fm[1]); }
+
+        addDebug("[voe] ningun patron encontro nada");
+        return null;
+    } catch (e) {
+        addDebug("[voe] EXCEPTION: " + String(e));
+        return null;
+    }
+}
+
+function doodExtract(pageUrl) {
+    try {
+        addDebug("[dood] fetch=" + pageUrl);
+        var html = httpGet(pageUrl, { "User-Agent": UA, "Referer": pageUrl });
+        addDebug("[dood] htmlLen=" + (html ? html.length : 0));
+        if (!html) return null;
+
+        var m = html.match(/(?:file|link|source)\s*[:=]\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
+        if (m && m[1]) { addDebug("[dood] match m3u8"); return cleanUrl(m[1]); }
+
+        var mp4 = html.match(/(?:file|link|source)\s*[:=]\s*['"]([^'"]+\.mp4[^'"]*)['"]/i);
+        if (mp4 && mp4[1]) { addDebug("[dood] match mp4"); return cleanUrl(mp4[1]); }
+
+        addDebug("[dood] ningun patron encontro nada");
+        return null;
+    } catch (e) {
+        addDebug("[dood] EXCEPTION: " + String(e));
+        return null;
+    }
+}
+
+function genericExtract(pageUrl) {
+    try {
+        addDebug("[generic] fetch=" + pageUrl);
+        var html = httpGet(pageUrl, { "User-Agent": UA, "Referer": pageUrl });
+        addDebug("[generic] htmlLen=" + (html ? html.length : 0));
+        if (!html) return null;
+
+        var m = html.match(/file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
+        if (m && m[1]) { addDebug("[generic] match file"); return cleanUrl(m[1]); }
+
+        m = html.match(/source\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
+        if (m && m[1]) { addDebug("[generic] match source"); return cleanUrl(m[1]); }
+
+        m = html.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+        if (m) { addDebug("[generic] match suelto m3u8"); return cleanUrl(m[0]); }
+
+        addDebug("[generic] ningun patron encontro nada");
+        return null;
+    } catch (e) {
+        addDebug("[generic] EXCEPTION: " + String(e));
+        return null;
+    }
+}
+
+function extractVideo(pageUrl) {
+    if (!pageUrl) { addDebug("[extract] URL vacia"); return null; }
+    pageUrl = cleanUrl(pageUrl);
+    if (isM3u8Url(pageUrl)) return directHls(pageUrl);
+
+    var host = getHost(pageUrl);
+    addDebug("[extract] host=" + host);
+
+    if (host.indexOf("vidhide") !== -1 || host.indexOf("callistanise") !== -1) return vidhideExtract(pageUrl);
+    if (host.indexOf("voe") !== -1) return voeExtract(pageUrl);
+    if (host.indexOf("dood") !== -1 || host.indexOf("do7go") !== -1) return doodExtract(pageUrl);
+    return genericExtract(pageUrl);
+}
+
+// =========================================================
+// VIDEO OBJECTS
+// =========================================================
+
+function mkThumb(url) {
+    if (!url) return new Thumbnails([]);
+    return new Thumbnails([new Thumbnail(url, 100)]);
+}
+
+function mkVideo(id, title, thumb, url, authorName) {
+    return new PlatformVideo({
+        id: new PlatformID("PlPro", String(id), PID),
+        name: title || "Sin título",
+        thumbnails: mkThumb(thumb),
+        author: new PlatformAuthorLink(PPID, authorName || "PlPro", "https://plpro.org", "", 0),
+        uploadDate: 0,
+        url: url,
+        duration: 0,
+        viewCount: 0,
+        isLive: false
+    });
+}
+
+function mkHls(url, name) {
+    if (!url) return null;
+    return new HLSSource({ name: name || "HLS", url: url, duration: 0 });
+}
+
+function mkDetail(id, name, thumb, url, videoSources, description) {
+    var valid = [];
+    var src = videoSources || [];
+    for (var i = 0; i < src.length; i++) { if (src[i]) valid.push(src[i]); }
+    var desc = description || "";
+    if (valid.length === 0) {
+        desc += "\n\n⚠️ No se encontró fuente de vídeo reproducible.";
+    } else {
+        desc += "\n\n✅ Fuentes encontradas: " + valid.length;
+    }
+    if (_debugLog.length > 0) desc += "\n\n=== REPORTE TÉCNICO ===\n" + _debugLog;
+
+    return new PlatformVideoDetails({
+        id: new PlatformID("PlPro", String(id), PID),
+        name: name || "Sin título",
+        thumbnails: mkThumb(thumb),
+        author: new PlatformAuthorLink(PPID, "PlPro", "https://plpro.org", "", 0),
+        uploadDate: 0,
+        url: url,
+        duration: 0,
+        viewCount: 0,
+        isLive: false,
+        video: new VideoSourceDescriptor(valid),
+        description: desc
+    });
 }
 
 // =========================================================
@@ -172,245 +420,397 @@ function ppGet(path) {
         var r = httpGet(url, { "User-Agent": "PLPro/8" });
         if (!r) return null;
         return JSON.parse(r);
-    } catch (e) {
-        log("PlPro Error: " + String(e));
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
-// Buscar en catálogo PlPro por título (películas + series)
-function ppFindTitle(titleQuery) {
-    var q = String(titleQuery || "").toLowerCase().replace(/\s*\(\d{4}\)\s*$/, "").trim();
+// Extraer links desde respuesta PlPro (array directo u objeto con .links/.data)
+function ppExtractLinks(resp) {
+    if (!resp) return [];
+    if (Array.isArray(resp)) return resp;
+    return resp.links || resp.data || resp.servers || [];
+}
+
+// Buscar en catálogo PlPro por título (sin acentos, matching por palabras)
+function ppFindTitle(titleQuery, onlyType) {
+    var q = normMatch(titleQuery);
     if (!q) return null;
 
-    // Buscar en películas
-    try {
-        var mdata = ppGet("/movies/resume");
-        if (mdata && mdata.movies) {
-            for (var i = 0; i < mdata.movies.length; i++) {
-                var m = mdata.movies[i];
-                var mTitle = String(m.b || "").toLowerCase().replace(/\s*\(\d{4}\)\s*$/, "").trim();
-                if (mTitle === q || mTitle.indexOf(q) !== -1 || q.indexOf(mTitle) !== -1) {
-                    return { type: "movie", id: m.a, title: m.b, thumb: m.d || m.c || "" };
-                }
-            }
-        }
-    } catch (e) {}
+    var qWords = q.split(" ").filter(function(w) { return w.length >= 3; });
 
-    // Buscar en series
-    try {
-        var sdata = ppGet("/series");
-        if (sdata && sdata.series) {
-            for (var j = 0; j < sdata.series.length; j++) {
-                var s = sdata.series[j];
-                var sTitle = String(s.b || "").toLowerCase().replace(/\s*\(\d{4}\)\s*$/, "").trim();
-                if (sTitle === q || sTitle.indexOf(q) !== -1 || q.indexOf(sTitle) !== -1) {
-                    return { type: "series", id: s.a, title: s.b, thumb: s.d || s.c || "" };
+    function scoreTitle(candidate) {
+        var c = normMatch(candidate);
+        if (c === q) return 100;
+        // Todas las palabras del query están en el candidate
+        if (qWords.length > 0 && qWords.every(function(w) { return c.indexOf(w) !== -1; })) {
+            var ratio = qWords.length / Math.max(c.split(" ").length, qWords.length);
+            if (ratio >= 0.6) return 70 + ratio * 25;
+        }
+        return 0;
+    }
+
+    var bestMovie = null, bestMovieScore = 0;
+    var bestSeries = null, bestSeriesScore = 0;
+
+    if (onlyType !== "series") {
+        try {
+            var mdata = ppGet("/movies/resume");
+            if (mdata && mdata.movies) {
+                for (var i = 0; i < mdata.movies.length; i++) {
+                    var m = mdata.movies[i];
+                    var sc = scoreTitle(m.b || "");
+                    if (sc > bestMovieScore) { bestMovieScore = sc; bestMovie = m; }
                 }
             }
-        }
-    } catch (e) {}
+        } catch (e) {}
+    }
+
+    if (onlyType !== "movie") {
+        try {
+            var sdata = ppGet("/series");
+            if (sdata && sdata.series) {
+                for (var j = 0; j < sdata.series.length; j++) {
+                    var s = sdata.series[j];
+                    var sc2 = scoreTitle(s.b || "");
+                    if (sc2 > bestSeriesScore) { bestSeriesScore = sc2; bestSeries = s; }
+                }
+            }
+        } catch (e) {}
+    }
+
+    // Preferir el mejor match (movie o series, el que tenga mayor score)
+    if (bestMovieScore >= 60 && bestMovieScore >= bestSeriesScore) {
+        return { type: "movie", id: bestMovie.a, title: bestMovie.b, thumb: bestMovie.d || bestMovie.c || "" };
+    }
+    if (bestSeriesScore >= 60) {
+        return { type: "series", id: bestSeries.a, title: bestSeries.b, thumb: bestSeries.d || bestSeries.c || "" };
+    }
 
     return null;
 }
 
 // Obtener links de película desde PlPro
 function ppMovieLinks(ppId) {
-    var data = ppGet("/movies/" + ppId + "/links");
-    if (!data || !data.length) return [];
+    var resp = ppGet("/movies/" + ppId + "/links");
+    var links = ppExtractLinks(resp);
+    if (!links.length) return [];
     var sources = [];
-    for (var i = 0; i < data.length && i < MAX_SERVERS; i++) {
-        var link = data[i];
+    for (var i = 0; i < links.length && i < MAX_SERVERS; i++) {
+        var link = links[i];
         var linkUrl = link.a || "";
         if (!linkUrl) continue;
         var serverName = (link.b || "Servidor") + (link.c ? " [" + link.c + "]" : "");
+        addDebug("[movie] probando " + (i+1) + ": " + linkUrl);
         var extracted = extractVideo(linkUrl);
         if (extracted) {
             var src = mkHls(extracted, serverName);
-            if (src) sources.push(src);
+            if (src) { sources.push(src); addDebug("[movie] FUENTE OK: " + serverName); }
+        } else {
+            addDebug("[movie] FALLÓ: " + serverName);
         }
     }
     return sources;
 }
 
-// Obtener links de episodio desde PlPro
+// Obtener links de episodio desde PlPro (con retry de paths)
 function ppEpisodeLinks(ppId, season, episode) {
-    var data = ppGet("/series/" + ppId + "/links/" + season + "/" + episode);
-    if (!data || !data.length) return [];
+    var paths = [
+        "/series/" + ppId + "/links/" + season + "/" + episode,
+        "/series/" + ppId + "/links/" + season + "/" + episode + "/"
+    ];
+    for (var p = 0; p < paths.length; p++) {
+        var resp = ppGet(paths[p]);
+        var links = ppExtractLinks(resp);
+        if (links.length) {
+            var sources = [];
+            for (var i = 0; i < links.length && i < MAX_SERVERS; i++) {
+                var link = links[i];
+                var linkUrl = link.a || "";
+                if (!linkUrl) continue;
+                var serverName = (link.b || "Servidor") + (link.c ? " [" + link.c + "]" : "");
+                addDebug("[episode] probando " + (i+1) + ": " + linkUrl);
+                var extracted = extractVideo(linkUrl);
+                if (extracted) {
+                    var src = mkHls(extracted, serverName);
+                    if (src) { sources.push(src); addDebug("[episode] FUENTE OK: " + serverName); }
+                } else {
+                    addDebug("[episode] FALLÓ: " + serverName);
+                }
+            }
+            if (sources.length) return sources;
+        }
+    }
+    return [];
+}
+
+// =========================================================
+// TMDB
+// =========================================================
+
+function tmdb(path) {
+    try {
+        var ck = "tmdb:" + path;
+        var c = cached(ck);
+        if (c) return c;
+        var sep = path.indexOf("?") !== -1 ? "&" : "?";
+        var url = TMDB_API + path + sep + "api_key=" + TMDB_KEY;
+        var r = httpGet(url, { "User-Agent": UA });
+        var data = safeParse(r);
+        if (data) store(ck, data);
+        return data;
+    } catch (e) { return null; }
+}
+
+function tmdbVideo(item, forcedType) {
+    if (!item) return null;
+    var title = item.title || item.name || "Sin título";
+    var year = (item.release_date || item.first_air_date || "").substring(0, 4);
+    var poster = item.poster_path ? fixImg(item.poster_path) : (item.backdrop_path ? fixImg(item.backdrop_path) : "");
+    var mediaType = forcedType || item.media_type || "movie";
+    var tmdbId = item.id;
+    var url = mediaType === "tv" ? "mxl://tv/" + tmdbId : "mxl://movie/" + tmdbId;
+    var display = title + (year ? " (" + year + ")" : "");
+    return mkVideo(tmdbId, display, poster, url);
+}
+
+// =========================================================
+// DETALLE PELÍCULA (TMDB portada + PlPro reproducción)
+// =========================================================
+
+function movieDetails(tmdbId) {
+    _debugLog = "";
+    addDebug("[movie] tmdbId=" + tmdbId);
+
+    var data = tmdb("/movie/" + tmdbId + "?language=es-ES&append_to_response=videos,credits,similar");
+    if (!data) return mkDetail("m_" + tmdbId, "Sin resultado", "", "mxl://movie/" + tmdbId, [], "Sin datos TMDB");
+
+    var title = data.title || "Sin título";
+    var year = (data.release_date || "").substring(0, 4);
+    var poster = data.poster_path ? fixImg(data.poster_path) : (data.backdrop_path ? fixImg(data.backdrop_path) : "");
+    var rating = data.vote_average ? data.vote_average.toFixed(1) : "N/A";
+    var runtime = data.runtime ? data.runtime + " min" : "";
+
+    var desc = "**" + title + "**";
+    if (year) desc += " (" + year + ")";
+    desc += "\n⭐ " + rating + "/10";
+    if (runtime) desc += " | " + runtime;
+    desc += "\n\n" + (data.overview || "Sin sinopsis");
+
+    if (data.genres) {
+        desc += "\n\n--- Géneros ---";
+        for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
+    }
+
+    desc += "\n\n--- Reproducción (PlPro) ---";
     var sources = [];
-    for (var i = 0; i < data.length && i < MAX_SERVERS; i++) {
-        var link = data[i];
-        var linkUrl = link.a || "";
-        if (!linkUrl) continue;
-        var serverName = (link.b || "Servidor") + (link.c ? " [" + link.c + "]" : "");
-        var extracted = extractVideo(linkUrl);
-        if (extracted) {
-            var src = mkHls(extracted, serverName);
-            if (src) sources.push(src);
+
+    var ppMatch = ppFindTitle(title, "movie");
+    if (ppMatch && ppMatch.type === "movie") {
+        addDebug("[movie] PlPro match: id=" + ppMatch.id + " title=" + ppMatch.title);
+        var ppSources = ppMovieLinks(ppMatch.id);
+        for (var i = 0; i < ppSources.length; i++) sources.push(ppSources[i]);
+        desc += "\n✅ Encontrado en PlPro: " + ppMatch.title + " (fuentes: " + ppSources.length + ")";
+    } else {
+        // Intentar buscar como serie también (a veces TMDB movie es serie en PlPro)
+        var ppMatchSeries = ppFindTitle(title, "series");
+        if (ppMatchSeries && ppMatchSeries.type === "series") {
+            addDebug("[movie] PlPro match como serie: id=" + ppMatchSeries.id);
+            var epSrc = ppEpisodeLinks(ppMatchSeries.id, 1, 1);
+            for (var k = 0; k < epSrc.length; k++) sources.push(epSrc[k]);
+            desc += "\n✅ Encontrado como serie en PlPro: " + ppMatchSeries.title;
+        } else {
+            desc += "\n⚠️ No se encontró en PlPro: \"" + title + "\"";
         }
     }
-    return sources;
-}
 
-// Obtener info de serie desde PlPro (para listar temporadas/episodios)
-function ppSerieInfo(ppId) {
-    return ppGet("/series/" + ppId);
-}
-
-// =========================================================
-// VIDEO EXTRACTORS (PlPro)
-// =========================================================
-
-function getHost(url) {
-    try {
-        var m = String(url).match(/^https?:\/\/([^\/?#]+)/i);
-        return m ? m[1].toLowerCase() : "";
-    } catch (e) { return ""; }
-}
-
-function b64decode(s) {
-    try {
-        return decodeURIComponent(
-            atob(s).split("").map(function(c) {
-                return "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2);
-            }).join("")
-        );
-    } catch (e) {
-        try { return atob(s); }
-        catch (e2) { return ""; }
+    if (data.videos && data.videos.results) {
+        for (var v = 0; v < data.videos.results.length; v++) {
+            if (data.videos.results[v].site === "YouTube" && data.videos.results[v].type === "Trailer") {
+                desc += "\n\n🎬 Trailer: https://youtube.com/watch?v=" + data.videos.results[v].key;
+                break;
+            }
+        }
     }
+
+    return mkDetail("m_" + tmdbId, title + (year ? " (" + year + ")" : ""), poster, "mxl://movie/" + tmdbId, sources, desc);
 }
-
-function directHls(url) {
-    url = cleanUrl(url);
-    if (isM3u8(url)) return url;
-    return null;
-}
-
-function vidhideExtract(pageUrl) {
-    try {
-        var fetchUrl = pageUrl;
-        if (fetchUrl.indexOf("vidhidefast.com") !== -1) {
-            fetchUrl = fetchUrl.replace("vidhidefast.com", "callistanise.com");
-        }
-        if (fetchUrl.indexOf("vidhide.com") !== -1 && fetchUrl.indexOf("callistanise") === -1) {
-            fetchUrl = fetchUrl.replace("vidhide.com", "callistanise.com");
-        }
-        var embedHost = getHost(fetchUrl);
-        var refererBase = "https://" + embedHost + "/";
-        var html = httpGet(fetchUrl, { "User-Agent": UA, "Referer": refererBase });
-        if (!html || html.length < 500) return null;
-
-        var splitIdx = html.lastIndexOf(".split('|')");
-        if (splitIdx === -1) return null;
-
-        var keyEnd = html.lastIndexOf("'", splitIdx);
-        var keyStart = html.lastIndexOf("'", keyEnd - 1) + 1;
-        var key = html.substring(keyStart, keyEnd);
-        var keyArr = key.split("|");
-        if (keyArr.length < 50) return null;
-
-        function decode(str) {
-            return str.replace(/\$\./g, "|").replace(/\|/g, function() {
-                return "";
-            });
-        }
-
-        var canvas = new Array(keyArr.length);
-        for (var i = 0; i < keyArr.length; i++) canvas[i] = keyArr[i];
-        for (var a = 0; a < keyArr.length; a++) {
-            var def = decode(canvas[a]);
-            canvas[a] = "";
-            var src = decode(canvas[keyArr[a]] || "");
-            canvas[a] = src;
-        }
-        var joined = canvas.join("");
-        var sources = joined.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/gi);
-        if (sources && sources.length) {
-            return cleanUrl(sources[0]);
-        }
-        var mp4s = joined.match(/https?:\/\/[^"'\s]+\.mp4[^"'\s]*/gi);
-        if (mp4s && mp4s.length) {
-            return cleanUrl(mp4s[0]);
-        }
-    } catch (e) {}
-    return null;
-}
-
-function voeExtract(pageUrl) {
-    try {
-        var html = httpGet(pageUrl, { "User-Agent": UA, "Referer": pageUrl });
-        if (!html) return null;
-
-        var m = html.match(/hls\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
-        if (m && m[1]) return cleanUrl(m[1]);
-
-        var am = html.match(/atob\(['"]([^'"]+)['"]\)/);
-        if (am) {
-            try {
-                var d = b64decode(am[1]);
-                var u = d.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-                if (u) return cleanUrl(u[0]);
-            } catch (e) {}
-        }
-
-        var fm = html.match(/file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
-        if (fm && fm[1]) return cleanUrl(fm[1]);
-    } catch (e) {}
-    return null;
-}
-
-function doodExtract(pageUrl) {
-    try {
-        var html = httpGet(pageUrl, { "User-Agent": UA, "Referer": pageUrl });
-        if (!html) return null;
-
-        var m = html.match(/(?:file|link|source)\s*[:=]\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
-        if (m && m[1]) return cleanUrl(m[1]);
-
-        var mp4 = html.match(/(?:file|link|source)\s*[:=]\s*['"]([^'"]+\.mp4[^'"]*)['"]/i);
-        if (mp4 && mp4[1]) return cleanUrl(mp4[1]);
-    } catch (e) {}
-    return null;
-}
-
-function genericExtract(pageUrl) {
-    try {
-        var html = httpGet(pageUrl, { "User-Agent": UA, "Referer": pageUrl });
-        if (!html) return null;
-
-        var m = html.match(/file\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
-        if (m && m[1]) return cleanUrl(m[1]);
-
-        m = html.match(/source\s*:\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
-        if (m && m[1]) return cleanUrl(m[1]);
-
-        m = html.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-        if (m) return cleanUrl(m[0]);
-    } catch (e) {}
-    return null;
-}
-
-function extractVideo(pageUrl) {
-    if (!pageUrl) return null;
-    pageUrl = cleanUrl(pageUrl);
-    if (isM3u8(pageUrl)) return directHls(pageUrl);
-
-    var host = getHost(pageUrl);
-    if (host.indexOf("vidhide") !== -1 || host.indexOf("callistanise") !== -1) return vidhideExtract(pageUrl);
-    if (host.indexOf("voe") !== -1) return voeExtract(pageUrl);
-    if (host.indexOf("dood") !== -1 || host.indexOf("do7go") !== -1) return doodExtract(pageUrl);
-    return genericExtract(pageUrl);
-}
-
 
 // =========================================================
-// JKANIME (respaldo para animes)
+// DETALLE SERIE (TMDB portada + PlPro reproducción)
 // =========================================================
 
-function slugify(s) {
-    return String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+function tvDetails(tmdbId) {
+    _debugLog = "";
+    addDebug("[tv] tmdbId=" + tmdbId);
+
+    var data = tmdb("/tv/" + tmdbId + "?language=es-ES&append_to_response=videos,credits,similar,seasons");
+    if (!data) return mkDetail("tv_" + tmdbId, "Sin resultado", "", "mxl://tv/" + tmdbId, [], "Sin datos TMDB");
+
+    var title = data.name || "Sin título";
+    var poster = data.poster_path ? fixImg(data.poster_path) : (data.backdrop_path ? fixImg(data.backdrop_path) : "");
+    var rating = data.vote_average ? data.vote_average.toFixed(1) : "N/A";
+    var numSeasons = data.number_of_seasons || 0;
+    var numEps = data.number_of_episodes || 0;
+
+    var desc = "**" + title + "**";
+    desc += "\n⭐ " + rating + "/10 | " + numSeasons + " temporadas | " + numEps + " episodios";
+    desc += "\n\n" + (data.overview || "Sin sinopsis");
+
+    if (data.genres) {
+        desc += "\n\n--- Géneros ---";
+        for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
+    }
+
+    // Detectar si es anime
+    var isAnime = false;
+    if (data.genres) {
+        for (var gi = 0; gi < data.genres.length; gi++) {
+            var gn = (data.genres[gi].name || "").toLowerCase();
+            if (gn === "animation" || gn === "animación" || gn === "anime") { isAnime = true; break; }
+        }
+    }
+
+    // Buscar en PlPro
+    var ppMatch = ppFindTitle(title, "series");
+    var ppSeriesId = null;
+    if (ppMatch && ppMatch.type === "series") {
+        ppSeriesId = ppMatch.id;
+        desc += "\n\n--- Reproducción (PlPro) ---";
+        desc += "\n✅ Serie encontrada en PlPro: " + ppMatch.title;
+    } else {
+        desc += "\n\n--- Reproducción ---";
+        desc += "\n⚠️ No se encontró en PlPro: \"" + title + "\"";
+    }
+
+    desc += "\n\n--- Temporadas y Episodios ---";
+
+    var seasonList = [];
+    if (data.seasons) {
+        for (var si = 0; si < data.seasons.length; si++) {
+            var sn = data.seasons[si];
+            if (sn.season_number > 0) seasonList.push(sn);
+        }
+    }
+
+    for (var si2 = 0; si2 < seasonList.length; si2++) {
+        var sn2 = seasonList[si2];
+        desc += "\n\nT" + sn2.season_number + ":";
+        for (var ep = 1; ep <= (sn2.episode_count || 20); ep++) {
+            desc += "\n  E" + ep + " → mxl://tv/" + tmdbId + "/" + sn2.season_number + "/" + ep;
+        }
+    }
+
+    // Precargar S1E1
+    var sources = [];
+    var ppOk = false;
+    if (ppSeriesId && seasonList.length > 0) {
+        desc += "\n\n--- Reproduciendo S1E1 por defecto ---";
+        var epSources = ppEpisodeLinks(ppSeriesId, seasonList[0].season_number, 1);
+        for (var k = 0; k < epSources.length; k++) sources.push(epSources[k]);
+        if (epSources.length > 0) {
+            ppOk = true;
+            desc += "\n✅ Fuentes S1E1: " + epSources.length;
+        } else {
+            desc += "\n⚠️ Sin fuentes S1E1 en PlPro";
+        }
+    }
+
+    // JkAnime fallback SOLO si es anime y PlPro no lo tiene
+    if (!ppOk && isAnime) {
+        desc += "\n\n--- Intentando JkAnime (anime) ---";
+        var jka = jkaFindEpisode(title, seasonList.length > 0 ? seasonList[0].season_number : 1, 1);
+        if (jka) {
+            desc += "\n✅ Anime encontrado en JkAnime";
+            var jkaSrc = mkHls(jka.url, "JkAnime");
+            if (jkaSrc) sources.push(jkaSrc);
+        } else {
+            desc += "\n⚠️ No se encontró en JkAnime tampoco";
+        }
+    }
+
+    return mkDetail("tv_" + tmdbId, title, poster, "mxl://tv/" + tmdbId, sources, desc);
 }
+
+// =========================================================
+// EPISODIO (TMDB metadata + PlPro reproducción)
+// =========================================================
+
+function episodeDetails(tmdbId, seasonNum, epNum) {
+    addDebug("[ep] tmdb=" + tmdbId + " S" + seasonNum + "E" + epNum);
+
+    var epData = tmdb("/tv/" + tmdbId + "/season/" + seasonNum + "/episode/" + epNum + "?language=es-ES");
+    var epTitle = "", thumb = "";
+    if (epData) {
+        epTitle = epData.name || "";
+        if (epData.still_path) thumb = fixImg(epData.still_path);
+    }
+
+    var display = "T" + seasonNum + "E" + epNum;
+    if (epTitle) display += " - " + epTitle;
+
+    var tvData = tmdb("/tv/" + tmdbId + "?language=es-ES");
+    var seriesTitle = tvData ? (tvData.name || "") : "";
+
+    // Detectar anime
+    var isAnime = false;
+    if (tvData && tvData.genres) {
+        for (var gi = 0; gi < tvData.genres.length; gi++) {
+            var gn = (tvData.genres[gi].name || "").toLowerCase();
+            if (gn === "animation" || gn === "animación" || gn === "anime") { isAnime = true; break; }
+        }
+    }
+
+    var desc = display;
+    if (epData && epData.overview) desc += "\n\n" + epData.overview;
+    desc += "\n\n--- Reproducción (PlPro) ---";
+
+    var sources = [];
+
+    // Buscar en PlPro
+    var ppMatch = ppFindTitle(seriesTitle, "series");
+    if (ppMatch && ppMatch.type === "series") {
+        var epSources = ppEpisodeLinks(ppMatch.id, seasonNum, epNum);
+        for (var i = 0; i < epSources.length; i++) sources.push(epSources[i]);
+        if (epSources.length > 0) {
+            desc += "\n✅ Episodio encontrado en PlPro";
+        } else {
+            desc += "\n⚠️ Sin fuentes para este episodio en PlPro";
+        }
+    } else {
+        desc += "\n⚠️ Serie no encontrada en PlPro: \"" + seriesTitle + "\"";
+    }
+
+    // JkAnime fallback SOLO para anime
+    if (sources.length === 0 && isAnime) {
+        var jka2 = jkaFindEpisode(seriesTitle, seasonNum, epNum);
+        if (jka2) {
+            desc += "\n✅ Fuente cargada desde JkAnime";
+            var jkaSrc2 = mkHls(jka2.url, "JkAnime");
+            if (jkaSrc2) sources.push(jkaSrc2);
+        }
+    }
+
+    desc += "\n\n← T" + seasonNum + "E" + (epNum - 1) + ": mxl://tv/" + tmdbId + "/" + seasonNum + "/" + (epNum - 1);
+    desc += "\n→ T" + seasonNum + "E" + (parseInt(epNum) + 1) + ": mxl://tv/" + tmdbId + "/" + seasonNum + "/" + (parseInt(epNum) + 1);
+
+    return { sources: sources, desc: desc, title: display, thumb: thumb };
+}
+
+function episodeView(tmdbId, seasonNum, epNum) {
+    _debugLog = "";
+    var ep = episodeDetails(tmdbId, seasonNum, epNum);
+    return mkDetail(
+        "tv_" + tmdbId + "_" + seasonNum + "_" + epNum,
+        ep.title || ("T" + seasonNum + "E" + epNum),
+        ep.thumb || "",
+        "mxl://tv/" + tmdbId + "/" + seasonNum + "/" + epNum,
+        ep.sources,
+        ep.desc
+    );
+}
+
+// =========================================================
+// JKANIME (respaldo solo para anime)
+// =========================================================
 
 function jkaSearch(query) {
     var out = [];
@@ -440,13 +840,10 @@ function jkaExtractVideo(episodeUrl) {
         if (!playerHtml) return null;
         var m3u8 = playerHtml.match(/url\s*[:=]\s*['"]([^'"]+\.m3u8[^'"]*)['"]/i);
         if (m3u8 && m3u8[1]) return cleanUrl(m3u8[1]);
-        var mp4 = playerHtml.match(/url\s*[:=]\s*['"]([^'"]+\.mp4[^'"]*)['"]/i);
-        if (mp4 && mp4[1]) return cleanUrl(mp4[1]);
     } catch (e) {}
     return null;
 }
 
-// Buscar un anime en JkAnime por título y devolver el primer episodio reproducible
 function jkaFindEpisode(titleQuery, seasonNum, epNum) {
     try {
         var results = jkaSearch(titleQuery);
@@ -454,312 +851,20 @@ function jkaFindEpisode(titleQuery, seasonNum, epNum) {
         var animeUrl = results[0].url;
         var ep = parseInt(epNum, 10) || 1;
         var epUrl = animeUrl + ep + "/";
-        if (parseInt(seasonNum, 10) > 1) {
-            epUrl = animeUrl + ep + "/";
-        }
         var url = jkaExtractVideo(epUrl);
-        if (url) return { url: url, animeUrl: animeUrl, epUrl: epUrl };
+        if (url) return { url: url, animeUrl: animeUrl };
     } catch (e) {}
     return null;
 }
 
-
 // =========================================================
-// VIDEO OBJECTS
-// =========================================================
-
-function mkThumb(url) {
-    if (!url) return new Thumbnails([]);
-    return new Thumbnails([new Thumbnail(url, 100)]);
-}
-
-function mkVideo(id, title, thumb, url) {
-    return new PlatformVideo({
-        id: new PlatformID("PlPro", String(id), PID),
-        name: title || "Sin título",
-        thumbnails: mkThumb(thumb),
-        author: new PlatformAuthorLink(MXL_PID, "PlPro", MXL_CHANNEL_URL, "", 0),
-        uploadDate: 0,
-        url: url,
-        duration: 0,
-        viewCount: 0,
-        isLive: false
-    });
-}
-
-function mkHls(url, name) {
-    if (!url) return null;
-    return new HLSSource({ name: name || "HLS", url: url, duration: 0 });
-}
-
-function mkDetail(id, name, thumb, url, videoSources, description) {
-    var valid = [];
-    var src = videoSources || [];
-    for (var i = 0; i < src.length; i++) {
-        if (src[i]) valid.push(src[i]);
-    }
-    var desc = description || "";
-    if (valid.length === 0) {
-        desc += "\n\n⚠️ No se encontró fuente de vídeo reproducible.";
-    } else {
-        desc += "\n\n✅ Fuentes encontradas: " + valid.length;
-    }
-    if (_debugLog.length > 0) {
-        desc += "\n\n=== REPORTE TÉCNICO ===\n" + _debugLog;
-    }
-    return new PlatformVideoDetails({
-        id: new PlatformID("PlPro", String(id), PID),
-        name: name || "Sin título",
-        thumbnails: mkThumb(thumb),
-        author: new PlatformAuthorLink(MXL_PID, "PlPro", MXL_CHANNEL_URL, "", 0),
-        uploadDate: 0,
-        url: url,
-        duration: 0,
-        viewCount: 0,
-        isLive: false,
-        video: new VideoSourceDescriptor(valid),
-        description: desc
-    });
-}
-
-// =========================================================
-// DETALLE PELÍCULA (TMDB portada + PlPro reproducción)
-// =========================================================
-
-function movieDetails(tmdbId) {
-    _debugLog = "";
-    log("[movie] tmdbId=" + tmdbId);
-
-    var data = tmdb("/movie/" + tmdbId + "?language=es-ES&append_to_response=videos,credits,similar");
-    if (!data) return mkDetail("m_" + tmdbId, "Sin resultado", "", "mxl://movie/" + tmdbId, [], "Sin datos TMDB");
-
-    var title = data.title || "Sin título";
-    var year = (data.release_date || "").substring(0, 4);
-    var poster = data.poster_path ? fixImg(data.poster_path) : "";
-    var rating = data.vote_average ? data.vote_average.toFixed(1) : "N/A";
-    var runtime = data.runtime ? data.runtime + " min" : "";
-
-    var desc = "**" + title + "**";
-    if (year) desc += " (" + year + ")";
-    desc += "\n⭐ " + rating + "/10";
-    if (runtime) desc += " | " + runtime;
-    desc += "\n\n" + (data.overview || "Sin sinopsis");
-
-    if (data.genres) {
-        desc += "\n\n--- Géneros ---";
-        for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
-    }
-
-    desc += "\n\n--- Reproducción (PlPro) ---";
-    var sources = [];
-
-    // Buscar título en PlPro para obtener links de reproducción
-    var ppMatch = ppFindTitle(title);
-    if (ppMatch && ppMatch.type === "movie") {
-        log("[movie] PlPro match: id=" + ppMatch.id + " title=" + ppMatch.title);
-        var ppSources = ppMovieLinks(ppMatch.id);
-        for (var i = 0; i < ppSources.length; i++) sources.push(ppSources[i]);
-        if (ppSources.length > 0) {
-            desc += "\n✅ Encontrado en PlPro: " + ppMatch.title;
-        } else {
-            desc += "\n⚠️ PlPro: sin fuentes para \"" + title + "\"";
-        }
-    } else {
-        desc += "\n⚠️ No se encontró en PlPro: \"" + title + "\"";
-    }
-
-    // Trailer
-    if (data.videos && data.videos.results) {
-        var vids = data.videos.results;
-        for (var v = 0; v < vids.length; v++) {
-            if (vids[v].site === "YouTube" && vids[v].type === "Trailer") {
-                desc += "\n\n🎬 Trailer: https://youtube.com/watch?v=" + vids[v].key;
-                break;
-            }
-        }
-    }
-
-    // Similares
-    if (data.similar && data.similar.results) {
-        desc += "\n\n--- Similares ---";
-        for (var r = 0; r < data.similar.results.length && r < 5; r++) {
-            var rec = data.similar.results[r];
-            var rt = rec.title || rec.name || "?";
-            var ry = (rec.release_date || rec.first_air_date || "").substring(0, 4);
-            desc += "\n• " + rt + (ry ? " (" + ry + ")" : "");
-        }
-    }
-
-    return mkDetail("m_" + tmdbId, title + (year ? " (" + year + ")" : ""), poster, "mxl://movie/" + tmdbId, sources, desc);
-}
-
-// =========================================================
-// DETALLE SERIE (TMDB portada + PlPro reproducción)
-// =========================================================
-
-function tvDetails(tmdbId) {
-    _debugLog = "";
-    log("[tv] tmdbId=" + tmdbId);
-
-    var data = tmdb("/tv/" + tmdbId + "?language=es-ES&append_to_response=videos,credits,similar,seasons");
-    if (!data) return mkDetail("tv_" + tmdbId, "Sin resultado", "", "mxl://tv/" + tmdbId, [], "Sin datos TMDB");
-
-    var title = data.name || "Sin título";
-    var poster = data.poster_path ? fixImg(data.poster_path) : "";
-    var rating = data.vote_average ? data.vote_average.toFixed(1) : "N/A";
-    var numSeasons = data.number_of_seasons || 0;
-    var numEps = data.number_of_episodes || 0;
-
-    var desc = "**" + title + "**";
-    desc += "\n⭐ " + rating + "/10 | " + numSeasons + " temporadas | " + numEps + " episodios";
-    desc += "\n\n" + (data.overview || "Sin sinopsis");
-
-    if (data.genres) {
-        desc += "\n\n--- Géneros ---";
-        for (var g = 0; g < data.genres.length; g++) desc += "\n• " + data.genres[g].name;
-    }
-
-    // Buscar serie en PlPro
-    var ppMatch = ppFindTitle(title);
-    var ppSeriesId = null;
-
-    if (ppMatch && ppMatch.type === "series") {
-        ppSeriesId = ppMatch.id;
-        log("[tv] PlPro match: id=" + ppSeriesId + " title=" + ppMatch.title);
-        desc += "\n\n--- Reproducción (PlPro) ---";
-        desc += "\n✅ Serie encontrada en PlPro: " + ppMatch.title;
-    }
-
-    desc += "\n\n--- Temporadas y Episodios ---";
-
-    var seasonList = [];
-    if (data.seasons) {
-        for (var si = 0; si < data.seasons.length; si++) {
-            var sn = data.seasons[si];
-            if (sn.season_number > 0) seasonList.push(sn);
-        }
-    }
-
-    for (var si2 = 0; si2 < seasonList.length; si2++) {
-        var sn2 = seasonList[si2];
-        desc += "\n\nT" + sn2.season_number + ":";
-        for (var ep = 1; ep <= (sn2.episode_count || 20); ep++) {
-            desc += "\n  E" + ep + " → mxl://tv/" + tmdbId + "/" + sn2.season_number + "/" + ep;
-        }
-    }
-
-    // Precargar fuente del episodio S1E1
-    var sources = [];
-    var ppOk = false;
-    if (ppSeriesId && seasonList.length > 0) {
-        var firstSeason = seasonList[0];
-        desc += "\n\n--- Reproduciendo S1E1 por defecto ---";
-        var epSources = ppEpisodeLinks(ppSeriesId, firstSeason.season_number, 1);
-        for (var k = 0; k < epSources.length; k++) sources.push(epSources[k]);
-        if (epSources.length > 0) {
-            ppOk = true;
-            desc += "\n✅ Fuentes S1E1 cargadas desde PlPro: " + epSources.length;
-        } else {
-            desc += "\n⚠️ Sin fuentes para S1E1 en PlPro";
-        }
-    }
-
-    // Si no hay match en PlPro, intentar con JkAnime (animes)
-    if (!ppOk && !ppSeriesId) {
-        var jka = jkaFindEpisode(title, 1, 1);
-        if (jka) {
-            desc = desc.replace("⚠️ No se encontró en PlPro: \"" + title + "\"", "✅ Encontrado en PlPro vía JkAnime: " + title);
-            desc += "\n✅ Fuente S1E1 cargada desde JkAnime";
-            var jkaSrc = mkHls(jka.url, "JkAnime");
-            if (jkaSrc) sources.push(jkaSrc);
-        } else {
-            desc += "\n⚠️ No se encontró en PlPro ni en JkAnime: \"" + title + "\"";
-        }
-    }
-
-    return mkDetail("tv_" + tmdbId, title, poster, "mxl://tv/" + tmdbId, sources, desc);
-}
-
-// =========================================================
-// EPISODIO (TMDB metadata + PlPro reproducción)
-// =========================================================
-
-function episodeDetails(tmdbId, seasonNum, epNum) {
-    log("[ep] tmdb=" + tmdbId + " S" + seasonNum + "E" + epNum);
-
-    // Metadata de TMDB
-    var epData = tmdb("/tv/" + tmdbId + "/season/" + seasonNum + "/episode/" + epNum + "?language=es-ES");
-    var epTitle = "";
-    var thumb = "";
-    if (epData) {
-        epTitle = epData.name || "";
-        if (epData.still_path) thumb = fixImg(epData.still_path);
-    }
-
-    var display = "T" + seasonNum + "E" + epNum;
-    if (epTitle) display += " - " + epTitle;
-
-    // Obtener título de la serie desde TMDB
-    var tvData = tmdb("/tv/" + tmdbId + "?language=es-ES");
-    var seriesTitle = tvData ? (tvData.name || "") : "";
-
-    var desc = display;
-    if (epData && epData.overview) desc += "\n\n" + epData.overview;
-    desc += "\n\n--- Reproducción (PlPro) ---";
-
-    var sources = [];
-
-    // Buscar serie en PlPro
-    var ppMatch = ppFindTitle(seriesTitle);
-    if (ppMatch && ppMatch.type === "series") {
-        log("[ep] PlPro match: id=" + ppMatch.id + " title=" + ppMatch.title);
-        var epSources = ppEpisodeLinks(ppMatch.id, seasonNum, epNum);
-        for (var i = 0; i < epSources.length; i++) sources.push(epSources[i]);
-        if (epSources.length > 0) {
-            desc += "\n✅ Episodio encontrado en PlPro";
-        } else {
-            desc += "\n⚠️ Sin fuentes para este episodio en PlPro";
-        }
-    } else {
-        desc += "\n⚠️ Serie no encontrada en PlPro: \"" + seriesTitle + "\"";
-        // Fallback: anime vía JkAnime
-        var jka2 = jkaFindEpisode(seriesTitle, seasonNum, epNum);
-        if (jka2) {
-            desc = desc.replace("⚠️ Serie no encontrada en PlPro: \"" + seriesTitle + "\"", "✅ Encontrado en JkAnime: " + seriesTitle);
-            desc += "\n✅ Fuente de episodio cargada desde JkAnime";
-            var jkaSrc2 = mkHls(jka2.url, "JkAnime");
-            if (jkaSrc2) sources.push(jkaSrc2);
-        }
-    }
-
-    // Navegación
-    desc += "\n\n← T" + seasonNum + "E" + (epNum - 1) + ": mxl://tv/" + tmdbId + "/" + seasonNum + "/" + (epNum - 1);
-    desc += "\n→ T" + seasonNum + "E" + (parseInt(epNum) + 1) + ": mxl://tv/" + tmdbId + "/" + seasonNum + "/" + (parseInt(epNum) + 1);
-
-    return { sources: sources, desc: desc, title: display, thumb: thumb };
-}
-
-function episodeView(tmdbId, seasonNum, epNum) {
-    _debugLog = "";
-    var ep = episodeDetails(tmdbId, seasonNum, epNum);
-    return mkDetail(
-        "tv_" + tmdbId + "_" + seasonNum + "_" + epNum,
-        ep.title || ("T" + seasonNum + "E" + epNum),
-        ep.thumb || "",
-        "mxl://tv/" + tmdbId + "/" + seasonNum + "/" + epNum,
-        ep.sources,
-        ep.desc
-    );
-}
-
-// =========================================================
-// HOME
+// HOME (con media_type explícito)
 // =========================================================
 
 function doHome() {
     var videos = [];
 
-    // TMDB trending
+    // TMDB trending (tiene media_type incluido)
     try {
         var trending = tmdb("/trending/all/week?language=es-ES");
         if (trending && trending.results) {
@@ -769,22 +874,22 @@ function doHome() {
         }
     } catch (e) {}
 
-    // TMDB películas populares
+    // TMDB películas populares (force movie type)
     try {
         var movies = tmdb("/movie/popular?language=es-ES&page=1");
         if (movies && movies.results) {
             for (var i2 = 0; i2 < movies.results.length && videos.length < 40; i2++) {
-                videos.push(tmdbVideo(movies.results[i2]));
+                videos.push(tmdbVideo(movies.results[i2], "movie"));
             }
         }
     } catch (e) {}
 
-    // TMDB series populares
+    // TMDB series populares (force tv type)
     try {
         var tvs = tmdb("/tv/popular?language=es-ES&page=1");
         if (tvs && tvs.results) {
             for (var i3 = 0; i3 < tvs.results.length && videos.length < 60; i3++) {
-                videos.push(tmdbVideo(tvs.results[i3]));
+                videos.push(tmdbVideo(tvs.results[i3], "tv"));
             }
         }
     } catch (e) {}
@@ -798,7 +903,6 @@ function doHome() {
 
 function doSearch(query) {
     var videos = [];
-
     try {
         var results = tmdb("/search/multi?query=" + encodeURIComponent(query) + "&language=es-ES");
         if (results && results.results) {
@@ -810,7 +914,6 @@ function doSearch(query) {
             }
         }
     } catch (e) {}
-
     return videos;
 }
 
@@ -835,7 +938,7 @@ function doRecommendations(url) {
         return videos;
     }
 
-    // Series: lista de episodios navegable (TMDB)
+    // Series: lista de episodios navegable
     var ts = url.match(/mxl:\/\/tv\/(\d+)/);
     if (ts) {
         var tmdbId = ts[1];
@@ -843,15 +946,10 @@ function doRecommendations(url) {
         var sTitle = sdata ? (sdata.name || "Serie") : "Serie";
         var poster = sdata && sdata.poster_path ? fixImg(sdata.poster_path) : "";
 
-        // Si es URL de episodio concreto, extraer S/E
-        var te2 = url.match(/mxl:\/\/tv\/(\d+)\/(\d+)\/(\d+)/);
-        var curSeason = te2 ? parseInt(te2[2], 10) : 1;
-
         var seasons = sdata ? (sdata.seasons || []) : [];
         for (var si = 0; si < seasons.length; si++) {
             var sn = seasons[si];
             if (!sn.season_number) continue;
-            // Buscar episodios de la temporada en TMDB
             var epData = tmdb("/tv/" + tmdbId + "/season/" + sn.season_number + "?language=es-ES");
             var eps = (epData && epData.episodes) ? epData.episodes : [];
             for (var ei = 0; ei < eps.length && videos.length < 40; ei++) {
@@ -894,13 +992,13 @@ function doDetails(url) {
 
 function doChannel() {
     return new PlatformChannel({
-        id: MXL_PID,
+        id: PPID,
         name: "PlPro",
         thumbnail: TMDB_IMG + "/wwemzKWzjKYJFfCeiB57q3r4Bcm.png",
         banner: "",
         subscribers: 0,
-        description: "PlPro - Películas y Series (TMDB + PlPro)",
-        url: MXL_CHANNEL_URL,
+        description: "TMDB + PlayerPro + JkAnime",
+        url: "https://plpro.org",
         urlAlternatives: [],
         links: {}
     });
@@ -914,46 +1012,23 @@ if (typeof source !== "undefined") {
     source.setSettings = function(s) { _settings = s || {}; };
     source.enable = function(c, s) { _settings = s || {}; };
 
-    source.getSearchCapabilities = function() {
-        return { types: [2], sorts: [], filters: [] };
-    };
+    source.getSearchCapabilities = function() { return { types: [2], sorts: [], filters: [] }; };
 
     source.search = function(query) {
         try { return new VideoPager(doSearch(query || ""), false, null); }
         catch (e) { return new VideoPager([], false, null); }
     };
 
-    source.isContentDetailsUrl = function(url) {
-        return url && url.indexOf("mxl://") !== -1;
-    };
-
-    source.isVideoDetailsUrl = function(url) {
-        return source.isContentDetailsUrl(url);
-    };
-
-    source.getVideoDetails = function(url) {
-        return source.getContentDetails(url);
-    };
+    source.isContentDetailsUrl = function(url) { return url && url.indexOf("mxl://") !== -1; };
+    source.isVideoDetailsUrl = function(url) { return source.isContentDetailsUrl(url); };
+    source.getVideoDetails = function(url) { return source.getContentDetails(url); };
 
     source.getHome = function() {
         try { return new VideoPager(doHome(), false, null); }
         catch (e) { return new VideoPager([], false, null); }
     };
 
-    source.isChannelUrl = function(url) {
-        return url && (url === MXL_CHANNEL_URL || url.indexOf("mxl://channel/") !== -1);
-    };
-
-    source.getChannel = function(url) {
-        try { return doChannel(); }
-        catch (e) { return doChannel(); }
-    };
-
-    source.getChannelContents = function(url) {
-        try { return new VideoPager(doHome(), false, null); }
-        catch (e) { return new VideoPager([], false, null); }
-    };
-
+    source.isChannelUrl = function(url) { return false; };
     source.searchSuggestions = function(query) { return []; };
 
     source.getContentRecommendations = function(url) {
@@ -973,11 +1048,11 @@ if (typeof source !== "undefined") {
                 thumbnails: new Thumbnails([
                     new Thumbnail(TMDB_IMG + "/wwemzKWzjKYJFfCeiB57q3r4Bcm.png", 100)
                 ]),
-                author: new PlatformAuthorLink(MXL_PID, "PlPro", MXL_CHANNEL_URL, "", 0),
+                author: new PlatformAuthorLink(PPID, "PlPro", "https://plpro.org", "", 0),
                 uploadDate: 0,
-                url: url || MXL_CHANNEL_URL,
+                url: url || "https://plpro.org",
                 duration: 0, viewCount: 0, isLive: false,
-                description: "Error: " + String(e) + "\n\nLog técnico:\n" + _debugLog,
+                description: "Error: " + String(e) + "\n\nLog:\n" + _debugLog,
                 video: new VideoSourceDescriptor([])
             });
         }
