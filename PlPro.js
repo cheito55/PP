@@ -1,10 +1,13 @@
-// PlayPelis GrayJay Source v43
+// PlayPelis GrayJay Source v44
 // Multi-servidor + HLS + diagnóstico
-// Cambios v42:
-//  - fixImg: soporta paths tipo TMDB con barra inicial ("/xxx.jpg") que antes devolvían "" (portadas rotas)
-//  - Nuevo source.getContentRecommendations: expone cada episodio como PlatformVideo navegable
-//  - ppSerieDetails: ahora resuelve y precarga las fuentes del Episodio 1 (S1E1) para que la serie
-//    arranque reproduciendo directamente al tocarla, en vez de quedar sin video
+// Cambios v44:
+//  - FIX: ppGet() enviaba el header User-Agent "PLPro/8" al hacer las peticiones
+//    al backend tv.m3uts.xyz. Ese backend es el mismo que usa el plugin Magma,
+//    cuyo script SÍ envía "Magma/8". Con el UA equivocado, el backend devolvía
+//    respuestas vacías/no válidas -> ppGet() retornaba null -> ppHome()/ppSearch()
+//    quedaban vacíos silenciosamente (por eso solo se veía anime de JkAnime) y
+//    ppMovieDetails()/resolveEpisodeSources() no encontraban servidores (por eso
+//    "video no disponible"). Corregido a "Magma/8".
 // Cambios v43:
 //  - PID: era idéntico al del plugin Magma (copy-paste de la plantilla sin regenerar).
 //    Con ambos plugins instalados a la vez, GrayJay podía enrutar mal el contenido
@@ -12,6 +15,11 @@
 //  - IPTV_URL/USER/PASS: el backend propio (plpro.org) tiene servidores caídos.
 //    Se cambió al backend de Magma (tv.m3uts.xyz), que tiene servidores actualizados
 //    y funcionando. Recordar agregar "tv.m3uts.xyz" a allowUrls en el config.
+// Cambios v42:
+//  - fixImg: soporta paths tipo TMDB con barra inicial ("/xxx.jpg") que antes devolvían "" (portadas rotas)
+//  - Nuevo source.getContentRecommendations: expone cada episodio como PlatformVideo navegable
+//  - ppSerieDetails: ahora resuelve y precarga las fuentes del Episodio 1 (S1E1) para que la serie
+//    arranque reproduciendo directamente al tocarla, en vez de quedar sin video
 var PID = "d5e7b1b9-c631-43e0-8cff-45d9e2c90a74";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
@@ -33,8 +41,6 @@ var TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 // CONFIGURACIÓN
 // =========================================================
 
-// Ahora prueba hasta 10 servidores.
-// Si hay menos, prueba los que existan.
 var MAX_TRY = 10;
 
 // =========================================================
@@ -140,11 +146,6 @@ function stripTags(s) {
     ).trim();
 }
 
-// FIX v42: antes, cualquier path que contuviera una "/" (por ejemplo
-// "/9BBTtGToQIz3lyIt.jpg", el formato típico que devuelve TMDB) fallaba
-// la condición y la función devolvía "" -> portada rota. Ahora se
-// interpreta como path relativo estilo TMDB independientemente de si
-// trae o no la barra inicial.
 function fixImg(u) {
     if (!u) return "";
 
@@ -457,12 +458,10 @@ function vidhideExtract(pageUrl) {
             return null;
         }
 
-        // Si ya es M3U8, devolver directamente.
         if (isM3u8Url(best)) {
             return best;
         }
 
-        // Algunos servidores entregan master.txt.
         if (/\.txt(?:[?#]|$)/i.test(best)) {
             addDebug(
                 "[vidhide] master.txt detectado"
@@ -787,7 +786,6 @@ function extractVideo(pageUrl) {
 
     pageUrl = cleanUrl(pageUrl);
 
-    // Si ya es un manifest HLS.
     if (isM3u8Url(pageUrl)) {
         return directHls(pageUrl);
     }
@@ -849,8 +847,6 @@ function mkDetail(
     var desc =
         description || "";
 
-    // IMPORTANTE:
-    // Ya no se agrega el vídeo de prueba.
     if (valid.length === 0) {
         desc +=
             "\n\n⚠️ No se encontró una fuente de vídeo reproducible.";
@@ -922,7 +918,10 @@ function ppGet(path) {
             http.GET(
                 url,
                 {
-                    "User-Agent": "PLPro/8"
+                    // FIX v44: era "PLPro/8". Este backend (tv.m3uts.xyz)
+                    // es el mismo que usa Magma y responde según este header;
+                    // con el UA equivocado devolvía datos vacíos/no válidos.
+                    "User-Agent": "Magma/8"
                 }
             );
 
@@ -1248,8 +1247,6 @@ function ppMovieDetails(id) {
 // EPISODIO (resolución de fuentes reutilizable)
 // =========================================================
 
-// FIX v42: extraída de ppEpisodeLinks para poder reutilizarla desde
-// ppSerieDetails y precargar el Episodio 1 sin duplicar código.
 function resolveEpisodeSources(id, season, episode) {
     var linksData =
         ppGet(
@@ -1353,11 +1350,6 @@ function resolveEpisodeSources(id, season, episode) {
 // SERIES
 // =========================================================
 
-// FIX v42: antes devolvía sources=[] siempre (solo texto con la lista
-// de episodios en la descripción, nada tocable ni reproducible). Ahora
-// resuelve y precarga el Episodio 1 de la Temporada 1 para que la
-// serie arranque reproduciendo directo al tocarla. La navegación al
-// resto de episodios se hace vía source.getContentRecommendations.
 function ppSerieDetails(id) {
     _debugLog = "";
 
@@ -2153,10 +2145,6 @@ function doHome() {
 // RECOMENDACIONES (lista de episodios navegable)
 // =========================================================
 
-// FIX v42: nuevo. GrayJay usa este hook para mostrar la lista de
-// "siguientes videos" debajo del detalle. Sin esto, los episodios de
-// una serie solo existían como texto suelto en la descripción y no
-// eran tocables.
 function doRecommendations(url) {
     var videos = [];
 
@@ -2370,7 +2358,6 @@ if (
             return [];
         };
 
-    // FIX v42: nuevo binding. Ver doRecommendations().
     source.getContentRecommendations =
         function(url) {
             try {
@@ -2445,7 +2432,6 @@ if (
                         "\n\nLOG TÉCNICO:\n" +
                         _debugLog,
 
-                    // Sin vídeo falso.
                     video:
                         new VideoSourceDescriptor([])
                 });
