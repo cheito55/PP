@@ -1,5 +1,15 @@
-// Magma GrayJay Source v49
+// Magma GrayJay Source v50
 // Multi-servidor + HLS + diagnóstico
+// Cambios v50:
+//  - FIX CRÍTICO del diagnóstico: _diag llegaba vacío ("sin llamadas
+//    registradas") al abrir el ítem DEBUG porque GrayJay ejecuta
+//    getHome()/search() y getContentDetails() como invocaciones de script
+//    separadas — las variables globales no persisten entre una y otra.
+//    Ahora el log de mgGet() se incrusta directamente en la URL del ítem
+//    (magma://debug?data=<encodeURIComponent>) en el momento en que se
+//    genera (dentro de mgHome()/mgSearch(), donde _diag sí tiene los
+//    datos frescos), y doDetails() lo lee de ahí en vez de la variable
+//    global.
 // Cambios v49:
 //  - FIX: el ítem "⚠️ DEBUG Magma" (v47/v48) no tenía ninguna fuente de
 //    video (VideoSourceDescriptor vacío). GrayJay intenta reproducir
@@ -1025,14 +1035,21 @@ function mgHome() {
             !data ||
             !data.movies
         ) {
-            // DEBUG v47: en vez de devolver vacío en silencio, dejamos un
-            // ítem tocable con el diagnóstico completo de qué pasó.
+            // DEBUG v50: _diag es global pero GrayJay parece correr cada
+            // función del plugin (getHome, getContentDetails, ...) en una
+            // instancia de script separada, así que _diag llega vacío
+            // cuando después tocás el ítem y se llama a getContentDetails().
+            // Ahora el diagnóstico se incrusta directamente en la URL del
+            // ítem, que sí viaja intacta hasta doDetails().
             videos.push(
                 mkVideo(
                     "mg_debug",
                     "⚠️ DEBUG Magma: catálogo vacío (tocá para ver detalle)",
                     "",
-                    "magma://debug",
+                    "magma://debug?data=" +
+                    encodeURIComponent(
+                        _diag.substring(0, 1500)
+                    ),
                     "Magma"
                 )
             );
@@ -1180,17 +1197,19 @@ function mgSearch(query) {
             }
         }
 
-        // DEBUG v48: mgHome() ya avisaba con un ítem visible cuando el
-        // catálogo venía vacío, pero mgSearch() seguía en silencio. Si no
-        // hubo NINGÚN resultado de Magma (ni por película ni por serie),
-        // agregamos el mismo ítem de diagnóstico acá.
+        // DEBUG v48/v50: si no hubo NINGÚN resultado de Magma (ni película
+        // ni serie), agregamos el mismo ítem de diagnóstico, con el log
+        // incrustado en la URL (ver nota en mgHome()).
         if (videos.length === 0) {
             videos.push(
                 mkVideo(
                     "mg_debug",
                     "⚠️ DEBUG Magma: búsqueda sin resultados (tocá para ver detalle)",
                     "",
-                    "magma://debug",
+                    "magma://debug?data=" +
+                    encodeURIComponent(
+                        _diag.substring(0, 1500)
+                    ),
                     "Magma"
                 )
             );
@@ -2089,13 +2108,27 @@ function doDetails(url) {
         );
     }
 
-    // DEBUG v49: ítem especial para leer _diag completo desde la app.
-    // v48 no tenía ninguna fuente de video, así que GrayJay mostraba
-    // "video no disponible" ANTES de que se pudiera leer la descripción
-    // con el diagnóstico. Ahora le metemos un stream HLS de prueba
-    // público (test-streams.mux.dev) para que sí reproduzca algo y se
-    // pueda ver el detalle/descripción con el log completo.
-    if (url === "magma://debug") {
+    // DEBUG v50: leemos el diagnóstico desde la URL (query param "data"),
+    // no desde _diag (que llega vacío por ser una ejecución de script
+    // separada — ver nota en mgHome()).
+    if (url.indexOf("magma://debug") === 0) {
+        var diagFromUrl = "(sin datos en la URL)";
+
+        var qIdx = url.indexOf("?data=");
+
+        if (qIdx !== -1) {
+            try {
+                diagFromUrl =
+                    decodeURIComponent(
+                        url.substring(qIdx + 6)
+                    );
+            } catch (e) {
+                diagFromUrl =
+                    "EXCEPTION decodificando: " +
+                    String(e);
+            }
+        }
+
         return mkDetail(
             "mg_debug",
             "Diagnóstico Magma",
@@ -2108,7 +2141,7 @@ function doDetails(url) {
                 )
             ],
             "=== DIAGNÓSTICO mgGet ===\n" +
-            (_diag || "(sin llamadas registradas)")
+            diagFromUrl
         );
     }
 
