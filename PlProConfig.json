@@ -3,21 +3,22 @@
     "description": "Peliculas/Series (Magma)",
     "author": "cheito55",
     "authorUrl": "https://github.com/cheito55",
-    "platformUrl": "https://magma.app"
+    "platformUrl": "https://magma.app",
     "sourceUrl": "https://cheito55.github.io/PP/PlProConfig.json",
     "scriptUrl": "https://cheito55.github.io/PP/PlPro.js",
-    "version": 6,
+    "version": 10,
     "id": "8a2f4b7e-3c1d-4f6a-9b8e-5d2c1a9f6e40",
     "scriptSignature": "",
     "scriptPublicKey": "",
-    "packages": ["Http"],
+    "packages": [
+        "Http"
+    ],
     "allowEval": false,
     "allowUrls": [
         "tv.m3uts.xyz",
         "image.tmdb.org",
         "api.themoviedb.org",
         "jkanime.net",
-
         "hgplaycdn.com",
         "zpjid.com",
         "bysejikuar.com",
@@ -26,32 +27,25 @@
         "streamlare.com",
         "josephseveralconcern.com",
         "wolfstream.tv",
-
         "premilkyway.com",
         "growthenablement.sbs",
-
         "51.222.85.85",
         "streamlock.net",
         "ovp-vivaro.digital",
         "intervenhosting.net",
         "videolatam.com",
-
         "tvcluboficial.com",
         "i.tvcluboficial.com",
-
         "acek-cdn.com",
         "goodstream.one",
         "hlswish.com",
         "websitetrafficboost.site",
         "dramiyos-cdn.com",
         "operationsupport.sbs",
-
         "vidhidefast.com",
         "vidhide.com",
         "callistanise.com",
-
         "voe.sx",
-
         "doodstream.com",
         "d000d.com",
         "dooodster.com",
@@ -66,8 +60,11 @@
         "dood.wf",
         "dood.watch",
         "dood.yt",
-
         "streamwish.to",
-        "puu.sh"
+        "puu.sh",
+        "nika.playmudos.com",
+        "cdn.jkdesa.com",
+        "stats.jkdesa.com",
+        "ts4.tvcluboficial.com"
     ]
 }
