@@ -1,37 +1,33 @@
-// PlayPelis GrayJay Source v44
+// Magma GrayJay Source v45
 // Multi-servidor + HLS + diagnóstico
-// Cambios v44:
-//  - FIX: ppGet() enviaba el header User-Agent "PLPro/8" al hacer las peticiones
-//    al backend tv.m3uts.xyz. Ese backend es el mismo que usa el plugin Magma,
-//    cuyo script SÍ envía "Magma/8". Con el UA equivocado, el backend devolvía
-//    respuestas vacías/no válidas -> ppGet() retornaba null -> ppHome()/ppSearch()
-//    quedaban vacíos silenciosamente (por eso solo se veía anime de JkAnime) y
-//    ppMovieDetails()/resolveEpisodeSources() no encontraban servidores (por eso
-//    "video no disponible"). Corregido a "Magma/8".
+// Cambios v45:
+//  - FIX: IPTV_URL apuntaba a "https://tv.m3uts.xyz". Una captura de red de la
+//    app original (com.magmaplayer) muestra que esta SIEMPRE habla con
+//    tv.m3uts.xyz por HTTP plano en el puerto 80 (nunca HTTPS/TLS). Con https://
+//    el pedido probablemente fallaba (o el servidor respondía distinto/vacío),
+//    haciendo que mgGet() devolviera null -> mgHome()/mgSearch() vacíos (por
+//    eso solo se veía anime de JkAnime) y sin fuentes en películas/series
+//    ("video no disponible"). Corregido a "http://tv.m3uts.xyz".
 // Cambios v43:
-//  - PID: era idéntico al del plugin Magma (copy-paste de la plantilla sin regenerar).
-//    Con ambos plugins instalados a la vez, GrayJay podía enrutar mal el contenido
-//    entre uno y otro. Se generó un id propio y único.
-//  - IPTV_URL/USER/PASS: el backend propio (plpro.org) tiene servidores caídos.
-//    Se cambió al backend de Magma (tv.m3uts.xyz), que tiene servidores actualizados
-//    y funcionando. Recordar agregar "tv.m3uts.xyz" a allowUrls en el config.
+//  - FIX CRÍTICO: doDetails() usaba las regex /pp:\/\/movie\/(\d+)/, /pp:\/\/serie\/.../
+//    para parsear las URLs internas "magma://movie/123" y "magma://serie/123/1/1".
+//    La subcadena "pp://" NUNCA aparece dentro de "magma://" (no hay doble "p"),
+//    así que esas regex siempre devolvían null y doDetails caía al detalle vacío
+//    sin fuentes -> nada se reproducía nunca para películas ni series.
+//    Corregido a /magma:\/\/movie\/(\d+)/ y /magma:\/\/serie\/.../ respectivamente.
 // Cambios v42:
 //  - fixImg: soporta paths tipo TMDB con barra inicial ("/xxx.jpg") que antes devolvían "" (portadas rotas)
 //  - Nuevo source.getContentRecommendations: expone cada episodio como PlatformVideo navegable
-//  - ppSerieDetails: ahora resuelve y precarga las fuentes del Episodio 1 (S1E1) para que la serie
+//  - mgSerieDetails: ahora resuelve y precarga las fuentes del Episodio 1 (S1E1) para que la serie
 //    arranque reproduciendo directamente al tocarla, en vez de quedar sin video
-var PID = "d5e7b1b9-c631-43e0-8cff-45d9e2c90a74";
+var PID = "8a2f4b7e-3c1d-4f6a-9b8e-5d2c1a9f6e40";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-var PPID = new PlatformID("PlayPelis", "PlayPelis", PID);
+var MGID = new PlatformID("Magma", "Magma", PID);
 var _settings = {};
 var _debugLog = "";
 
-// Cambiado a pedido del usuario: el backend propio de PlPro (plpro.org)
-// tiene servidores caídos/desactualizados. Se apunta al mismo backend
-// que usa el plugin Magma (tv.m3uts.xyz), que sí tiene servidores
-// funcionando.
-var IPTV_URL = "https://tv.m3uts.xyz";
+var IPTV_URL = "http://tv.m3uts.xyz";
 var IPTV_USER = "m";
 var IPTV_PASS = "m";
 var JK = "https://jkanime.net";
@@ -41,6 +37,8 @@ var TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 // CONFIGURACIÓN
 // =========================================================
 
+// Ahora prueba hasta 10 servidores.
+// Si hay menos, prueba los que existan.
 var MAX_TRY = 10;
 
 // =========================================================
@@ -146,6 +144,11 @@ function stripTags(s) {
     ).trim();
 }
 
+// FIX v42: antes, cualquier path que contuviera una "/" (por ejemplo
+// "/9BBTtGToQIz3lyIt.jpg", el formato típico que devuelve TMDB) fallaba
+// la condición y la función devolvía "" -> portada rota. Ahora se
+// interpreta como path relativo estilo TMDB independientemente de si
+// trae o no la barra inicial.
 function fixImg(u) {
     if (!u) return "";
 
@@ -191,7 +194,7 @@ function mkThumb(url) {
 function mkVideo(id, title, thumb, url, authorName) {
     return new PlatformVideo({
         id: new PlatformID(
-            "PlayPelis",
+            "Magma",
             String(id),
             PID
         ),
@@ -201,9 +204,9 @@ function mkVideo(id, title, thumb, url, authorName) {
         thumbnails: mkThumb(thumb),
 
         author: new PlatformAuthorLink(
-            PPID,
-            authorName || "PlayPelis",
-            "https://playpelis.app",
+            MGID,
+            authorName || "Magma",
+            "https://magma.app",
             "",
             0
         ),
@@ -458,10 +461,12 @@ function vidhideExtract(pageUrl) {
             return null;
         }
 
+        // Si ya es M3U8, devolver directamente.
         if (isM3u8Url(best)) {
             return best;
         }
 
+        // Algunos servidores entregan master.txt.
         if (/\.txt(?:[?#]|$)/i.test(best)) {
             addDebug(
                 "[vidhide] master.txt detectado"
@@ -786,6 +791,7 @@ function extractVideo(pageUrl) {
 
     pageUrl = cleanUrl(pageUrl);
 
+    // Si ya es un manifest HLS.
     if (isM3u8Url(pageUrl)) {
         return directHls(pageUrl);
     }
@@ -847,6 +853,8 @@ function mkDetail(
     var desc =
         description || "";
 
+    // IMPORTANTE:
+    // Ya no se agrega el vídeo de prueba.
     if (valid.length === 0) {
         desc +=
             "\n\n⚠️ No se encontró una fuente de vídeo reproducible.";
@@ -864,7 +872,7 @@ function mkDetail(
 
     return new PlatformVideoDetails({
         id: new PlatformID(
-            "PlayPelis",
+            "Magma",
             String(id),
             PID
         ),
@@ -874,9 +882,9 @@ function mkDetail(
         thumbnails: mkThumb(thumb),
 
         author: new PlatformAuthorLink(
-            PPID,
-            "PlayPelis",
-            "https://playpelis.app",
+            MGID,
+            "Magma",
+            "https://magma.app",
             "",
             0
         ),
@@ -898,7 +906,7 @@ function mkDetail(
 // PLAYERPRO
 // =========================================================
 
-function ppGet(path) {
+function mgGet(path) {
     try {
         var sep =
             path.indexOf("?") !== -1
@@ -918,9 +926,6 @@ function ppGet(path) {
             http.GET(
                 url,
                 {
-                    // FIX v44: era "PLPro/8". Este backend (tv.m3uts.xyz)
-                    // es el mismo que usa Magma y responde según este header;
-                    // con el UA equivocado devolvía datos vacíos/no válidos.
                     "User-Agent": "Magma/8"
                 }
             );
@@ -941,12 +946,12 @@ function ppGet(path) {
     }
 }
 
-function ppHome() {
+function mgHome() {
     var videos = [];
 
     try {
         var data =
-            ppGet("/movies/resume");
+            mgGet("/movies/resume");
 
         if (
             !data ||
@@ -967,7 +972,7 @@ function ppHome() {
             if (m.b) {
                 videos.push(
                     mkVideo(
-                        "pp_m_" + m.a,
+                        "mg_m_" + m.a,
 
                         (m.l
                             ? "[" + m.l + "] "
@@ -981,10 +986,10 @@ function ppHome() {
                         fixImg(m.c) ||
                         "",
 
-                        "pp://movie/" +
+                        "magma://movie/" +
                         m.a,
 
-                        "PlayPelis"
+                        "Magma"
                     )
                 );
             }
@@ -995,7 +1000,7 @@ function ppHome() {
     return videos;
 }
 
-function ppSearch(query) {
+function mgSearch(query) {
     var videos = [];
 
     var q =
@@ -1004,7 +1009,7 @@ function ppSearch(query) {
 
     try {
         var data =
-            ppGet("/movies/resume");
+            mgGet("/movies/resume");
 
         if (
             data &&
@@ -1030,7 +1035,7 @@ function ppSearch(query) {
                 ) {
                     videos.push(
                         mkVideo(
-                            "pp_m_" + m.a,
+                            "mg_m_" + m.a,
 
                             (m.l
                                 ? "[" + m.l + "] "
@@ -1044,10 +1049,10 @@ function ppSearch(query) {
                             fixImg(m.c) ||
                             "",
 
-                            "pp://movie/" +
+                            "magma://movie/" +
                             m.a,
 
-                            "PlayPelis"
+                            "Magma"
                         )
                     );
                 }
@@ -1055,7 +1060,7 @@ function ppSearch(query) {
         }
 
         var sdata =
-            ppGet("/series");
+            mgGet("/series");
 
         if (
             sdata &&
@@ -1081,14 +1086,14 @@ function ppSearch(query) {
                 ) {
                     videos.push(
                         mkVideo(
-                            "pp_s_" + s.a,
+                            "mg_s_" + s.a,
                             "[Serie] " + s.b,
                             fixImg(s.d) ||
                             fixImg(s.c) ||
                             "",
-                            "pp://serie/" +
+                            "magma://serie/" +
                             s.a,
-                            "PlayPelis"
+                            "Magma"
                         )
                     );
                 }
@@ -1104,18 +1109,18 @@ function ppSearch(query) {
 // PELÍCULA
 // =========================================================
 
-function ppMovieDetails(id) {
+function mgMovieDetails(id) {
     _debugLog = "";
 
     var data =
-        ppGet("/movies/" + id);
+        mgGet("/movies/" + id);
 
     if (!data) {
         return mkDetail(
-            "pp_m_" + id,
+            "mg_m_" + id,
             "Sin resultado",
             "",
-            "pp://movie/" + id,
+            "magma://movie/" + id,
             [],
             ""
         );
@@ -1133,7 +1138,7 @@ function ppMovieDetails(id) {
         data.e || "";
 
     var linksData =
-        ppGet(
+        mgGet(
             "/movies/" +
             id +
             "/links"
@@ -1234,10 +1239,10 @@ function ppMovieDetails(id) {
     }
 
     return mkDetail(
-        "pp_m_" + id,
+        "mg_m_" + id,
         title,
         thumb,
-        "pp://movie/" + id,
+        "magma://movie/" + id,
         sources,
         desc
     );
@@ -1247,9 +1252,11 @@ function ppMovieDetails(id) {
 // EPISODIO (resolución de fuentes reutilizable)
 // =========================================================
 
+// FIX v42: extraída de mgEpisodeLinks para poder reutilizarla desde
+// mgSerieDetails y precargar el Episodio 1 sin duplicar código.
 function resolveEpisodeSources(id, season, episode) {
     var linksData =
-        ppGet(
+        mgGet(
             "/series/" +
             id +
             "/links/" +
@@ -1350,18 +1357,23 @@ function resolveEpisodeSources(id, season, episode) {
 // SERIES
 // =========================================================
 
-function ppSerieDetails(id) {
+// FIX v42: antes devolvía sources=[] siempre (solo texto con la lista
+// de episodios en la descripción, nada tocable ni reproducible). Ahora
+// resuelve y precarga el Episodio 1 de la Temporada 1 para que la
+// serie arranque reproduciendo directo al tocarla. La navegación al
+// resto de episodios se hace vía source.getContentRecommendations.
+function mgSerieDetails(id) {
     _debugLog = "";
 
     var data =
-        ppGet("/series/" + id);
+        mgGet("/series/" + id);
 
     if (!data) {
         return mkDetail(
-            "pp_s_" + id,
+            "mg_s_" + id,
             "Sin resultado",
             "",
-            "pp://serie/" + id,
+            "magma://serie/" + id,
             [],
             ""
         );
@@ -1437,7 +1449,7 @@ function ppSerieDetails(id) {
             desc +=
                 "\n  Ep " +
                 epNum +
-                " → pp://serie/" +
+                " → magma://serie/" +
                 id +
                 "/" +
                 seasonNum +
@@ -1468,10 +1480,10 @@ function ppSerieDetails(id) {
     }
 
     return mkDetail(
-        "pp_s_" + id,
+        "mg_s_" + id,
         title,
         thumb,
-        "pp://serie/" + id,
+        "magma://serie/" + id,
         sources,
         desc
     );
@@ -1481,7 +1493,7 @@ function ppSerieDetails(id) {
 // EPISODIO
 // =========================================================
 
-function ppEpisodeLinks(
+function mgEpisodeLinks(
     id,
     season,
     episode
@@ -1489,11 +1501,11 @@ function ppEpisodeLinks(
     _debugLog = "";
 
     var data =
-        ppGet("/series/" + id);
+        mgGet("/series/" + id);
 
     if (!data) {
         return mkDetail(
-            "pp_se_" + id,
+            "mg_se_" + id,
             "Sin resultado",
             "",
             "",
@@ -1532,7 +1544,7 @@ function ppEpisodeLinks(
 
     if (epNum > 1) {
         desc +=
-            "\n\n← Ep Anterior: pp://serie/" +
+            "\n\n← Ep Anterior: magma://serie/" +
             id +
             "/" +
             season +
@@ -1541,7 +1553,7 @@ function ppEpisodeLinks(
     }
 
     desc +=
-        "\n→ Ep Siguiente: pp://serie/" +
+        "\n→ Ep Siguiente: magma://serie/" +
         id +
         "/" +
         season +
@@ -1549,7 +1561,7 @@ function ppEpisodeLinks(
         (epNum + 1);
 
     return mkDetail(
-        "pp_se_" +
+        "mg_se_" +
         id +
         "_" +
         season +
@@ -1560,7 +1572,7 @@ function ppEpisodeLinks(
 
         thumb,
 
-        "pp://serie/" +
+        "magma://serie/" +
         id +
         "/" +
         season +
@@ -1925,7 +1937,7 @@ function doSearch(query) {
 
     try {
         var r =
-            ppSearch(query);
+            mgSearch(query);
 
         for (
             var i = 0;
@@ -1991,16 +2003,18 @@ function doDetails(url) {
 
     if (
         url.indexOf(
-            "pp://movie/"
+            "magma://movie/"
         ) === 0
     ) {
+        // FIX v43: era /pp:\/\/movie\/(\d+)/ (nunca hacía match contra
+        // "magma://movie/123"). Ahora coincide con el esquema real.
         var mm =
             url.match(
-                /pp:\/\/movie\/(\d+)/
+                /magma:\/\/movie\/(\d+)/
             );
 
         if (mm) {
-            return ppMovieDetails(
+            return mgMovieDetails(
                 mm[1]
             );
         }
@@ -2008,29 +2022,31 @@ function doDetails(url) {
 
     if (
         url.indexOf(
-            "pp://serie/"
+            "magma://serie/"
         ) === 0
     ) {
+        // FIX v43: era /pp:\/\/serie\/(\d+)\/(\d+)\/(\d+)/, idem arriba.
         var se =
             url.match(
-                /pp:\/\/serie\/(\d+)\/(\d+)\/(\d+)/
+                /magma:\/\/serie\/(\d+)\/(\d+)\/(\d+)/
             );
 
         if (se) {
-            return ppEpisodeLinks(
+            return mgEpisodeLinks(
                 se[1],
                 se[2],
                 se[3]
             );
         }
 
+        // FIX v43: era /pp:\/\/serie\/(\d+)/, idem arriba.
         var ss =
             url.match(
-                /pp:\/\/serie\/(\d+)/
+                /magma:\/\/serie\/(\d+)/
             );
 
         if (ss) {
-            return ppSerieDetails(
+            return mgSerieDetails(
                 ss[1]
             );
         }
@@ -2055,7 +2071,7 @@ function doHome() {
 
     try {
         var r =
-            ppHome();
+            mgHome();
 
         for (
             var i = 0;
@@ -2145,13 +2161,17 @@ function doHome() {
 // RECOMENDACIONES (lista de episodios navegable)
 // =========================================================
 
+// FIX v42: nuevo. GrayJay usa este hook para mostrar la lista de
+// "siguientes videos" debajo del detalle. Sin esto, los episodios de
+// una serie solo existían como texto suelto en la descripción y no
+// eran tocables.
 function doRecommendations(url) {
     var videos = [];
 
     try {
         var se =
             String(url || "").match(
-                /pp:\/\/serie\/(\d+)$/
+                /magma:\/\/serie\/(\d+)$/
             );
 
         if (!se) {
@@ -2161,7 +2181,7 @@ function doRecommendations(url) {
         var id = se[1];
 
         var data =
-            ppGet("/series/" + id);
+            mgGet("/series/" + id);
 
         if (!data) {
             return videos;
@@ -2219,7 +2239,7 @@ function doRecommendations(url) {
 
                 videos.push(
                     mkVideo(
-                        "pp_se_" +
+                        "mg_se_" +
                         id +
                         "_" +
                         seasonNum +
@@ -2234,14 +2254,14 @@ function doRecommendations(url) {
 
                         thumb,
 
-                        "pp://serie/" +
+                        "magma://serie/" +
                         id +
                         "/" +
                         seasonNum +
                         "/" +
                         epNum,
 
-                        "PlayPelis"
+                        "Magma"
                     )
                 );
             }
@@ -2309,7 +2329,7 @@ if (
                     ) !== -1 ||
 
                     url.indexOf(
-                        "pp://"
+                        "magma://"
                     ) !== -1
                 )
             );
@@ -2358,6 +2378,7 @@ if (
             return [];
         };
 
+    // FIX v42: nuevo binding. Ver doRecommendations().
     source.getContentRecommendations =
         function(url) {
             try {
@@ -2392,7 +2413,7 @@ if (
             } catch (e) {
                 return new PlatformVideoDetails({
                     id: new PlatformID(
-                        "PlayPelis",
+                        "Magma",
                         "error_fallo",
                         PID
                     ),
@@ -2411,9 +2432,9 @@ if (
 
                     author:
                         new PlatformAuthorLink(
-                            PPID,
-                            "PlayPelis",
-                            "https://playpelis.app",
+                            MGID,
+                            "Magma",
+                            "https://magma.app",
                             "",
                             0
                         ),
@@ -2421,7 +2442,7 @@ if (
                     uploadDate: 0,
                     url:
                         url ||
-                        "https://playpelis.app",
+                        "https://magma.app",
                     duration: 0,
                     viewCount: 0,
                     isLive: false,
@@ -2432,6 +2453,7 @@ if (
                         "\n\nLOG TÉCNICO:\n" +
                         _debugLog,
 
+                    // Sin vídeo falso.
                     video:
                         new VideoSourceDescriptor([])
                 });
