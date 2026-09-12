@@ -1,56 +1,6 @@
-// Magma GrayJay Source v50
+// Magma GrayJay Source v48
 // Multi-servidor + HLS + diagnóstico
-// Cambios v50:
-//  - FIX CRÍTICO del diagnóstico: _diag llegaba vacío ("sin llamadas
-//    registradas") al abrir el ítem DEBUG porque GrayJay ejecuta
-//    getHome()/search() y getContentDetails() como invocaciones de script
-//    separadas — las variables globales no persisten entre una y otra.
-//    Ahora el log de mgGet() se incrusta directamente en la URL del ítem
-//    (magma://debug?data=<encodeURIComponent>) en el momento en que se
-//    genera (dentro de mgHome()/mgSearch(), donde _diag sí tiene los
-//    datos frescos), y doDetails() lo lee de ahí en vez de la variable
-//    global.
-// Cambios v49:
-//  - FIX: el ítem "⚠️ DEBUG Magma" (v47/v48) no tenía ninguna fuente de
-//    video (VideoSourceDescriptor vacío). GrayJay intenta reproducir
-//    apenas se abre un ítem y, al no encontrar nada, muestra "video no
-//    disponible" — nunca se llegaba a ver la descripción con el
-//    diagnóstico. Ahora se le agrega un stream HLS de prueba público
-//    (test-streams.mux.dev) como fuente, así reproduce algo real y se
-//    puede leer el detalle/descripción con el log completo de _diag.
-//    Requiere agregar "test-streams.mux.dev" a allowUrls en el config.
-// Cambios v48:
-//  - Confirmado por fetch directo que https://cheito55.github.io/PP/PlPro.js
-//    y PlProConfig.json SÍ son el archivo real que sirve GrayJay (no hay
-//    problema de caché ni de URL — v47 ya estaba deployado tal cual).
-//  - FIX: el ítem "⚠️ DEBUG Magma" de v47 solo se agregaba en mgHome().
-//    mgSearch() seguía devolviendo silencio total si el catálogo fallaba,
-//    así que si estabas mirando resultados de búsqueda en vez del Home
-//    nunca veías el debug. Ahora mgSearch() también agrega el mismo ítem
-//    de diagnóstico cuando no encuentra nada ni en /movies/resume ni en
-//    /series para la query.
-// Cambios v47:
-//  - DEBUG: mgHome()/mgSearch() tragaban cualquier fallo de mgGet() en un
-//    catch(e){} silencioso, así que nunca se sabía POR QUÉ el catálogo
-//    quedaba vacío. Ahora mgGet() deja un log persistente (_diag) con la
-//    URL exacta, el status HTTP y los primeros 200 caracteres de la
-//    respuesta (o la excepción, si la hay) en cada llamada. Si mgHome()
-//    no encuentra películas, en vez de devolver la lista vacía en
-//    silencio, agrega un ítem "⚠️ DEBUG Magma" que al abrirlo muestra
-//    todo ese log. Esto es temporal, solo para diagnosticar.
-// Cambios v46:
-//  - REVERTIDO el cambio de v45: IPTV_URL vuelve a "https://tv.m3uts.xyz".
-//    Comparando este script contra el de PlPro (que sí trae el catálogo
-//    completo apuntando a este mismo backend por HTTPS), la única diferencia
-//    funcional real que quedaba entre ambos era el protocolo. Como PlPro
-//    funciona con https://, la captura de red (que mostraba solo HTTP puerto 80
-//    en la app original) no era determinante: un server puede aceptar ambos
-//    protocolos aunque la app oficial solo use uno. El bug real de "solo
-//    aparece anime / video no disponible" sigue sin resolverse; sigue pendiente
-//    revisar si el problema está en otro lado (caché del script en GrayJay,
-//    versión del config sin incrementar, o algo en mgGet()/mgHome()/mgSearch()
-//    aún no identificado).
-// Cambios v45 (retirado en v46):
+// Cambios v45:
 //  - FIX: IPTV_URL apuntaba a "https://tv.m3uts.xyz". Una captura de red de la
 //    app original (com.magmaplayer) muestra que esta SIEMPRE habla con
 //    tv.m3uts.xyz por HTTP plano en el puerto 80 (nunca HTTPS/TLS). Con https://
@@ -72,18 +22,13 @@
 //    arranque reproduciendo directamente al tocarla, en vez de quedar sin video
 var PID = "8a2f4b7e-3c1d-4f6a-9b8e-5d2c1a9f6e40";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+var DALVIK_UA = "Dalvik/2.1.0 (Linux; U; Android 16; T522E Build/BP2A.250605.031.A3)";
 
 var MGID = new PlatformID("Magma", "Magma", PID);
 var _settings = {};
 var _debugLog = "";
 
-// DEBUG v47: log persistente (no se resetea entre llamadas, a diferencia de
-// _debugLog) para poder ver qué pasó en mgGet() incluso cuando la falla
-// ocurre en mgHome()/mgSearch() (que hasta ahora tragaban el error en un
-// catch(e){} silencioso).
-var _diag = "";
-
-var IPTV_URL = "https://tv.m3uts.xyz";
+var IPTV_URL = "http://tv.m3uts.xyz";
 var IPTV_USER = "m";
 var IPTV_PASS = "m";
 var JK = "https://jkanime.net";
@@ -836,7 +781,112 @@ function genericExtract(pageUrl) {
 // EXTRACTOR UNIFICADO
 // =========================================================
 
+// =========================================================
+// STREAMWISH / HOSTER EMBED (desofuscación de packers)
+// =========================================================
+
+function unpackPacked(js) {
+    try {
+        var m =
+            String(js || "").match(
+                /eval\(function\(p,a,c,k,e,d\)\{[\s\S]*?\}\('([\s\S]*?)',(\d+),(\d+),'([\s\S]*?)'\.split\('\|'\)(?:,[^)]*)?\)\)/
+            );
+
+        if (!m) {
+            return null;
+        }
+
+        var p = m[1];
+        var a = parseInt(m[2], 10);
+        var c = parseInt(m[3], 10);
+        var k = m[4].replace(/\\'/g, "'").split("|");
+        var out = p;
+
+        for (var idx = c - 1; idx >= 0; idx--) {
+            if (k[idx]) {
+                var w =
+                    new RegExp(
+                        "\\b" +
+                        idx.toString(a) +
+                        "\\b",
+                        "g"
+                    );
+
+                out = out.replace(w, k[idx]);
+            }
+        }
+
+        return out;
+
+    } catch (e) {
+        return null;
+    }
+}
+
+function streamwishExtract(pageUrl) {
+    try {
+        var html =
+            httpGet(
+                pageUrl,
+                {
+                    "User-Agent": UA,
+                    "Referer": pageUrl
+                }
+            );
+
+        if (!html || html.length < 500) {
+            return null;
+        }
+
+        var dec =
+            unpackPacked(html);
+
+        if (!dec || dec.length < 100) {
+            return null;
+        }
+
+        var linksRe =
+            /"(hls4|hls3|hls2)"\s*:\s*"(https?:\/\/[^"]+)"/g;
+
+        var lm;
+        var best = null;
+
+        while ((lm = linksRe.exec(dec))) {
+            var u = cleanUrl(lm[2]);
+
+            if (!u) continue;
+
+            if (best === null) {
+                best = u;
+            }
+
+            if (u.indexOf(".m3u8") !== -1) {
+                return u;
+            }
+        }
+
+        if (best) {
+            return best;
+        }
+
+        var fm =
+            dec.match(
+                /file\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i
+            );
+
+        if (fm && fm[1]) {
+            return cleanUrl(fm[1]);
+        }
+
+        return null;
+
+    } catch (e) {
+        return null;
+    }
+}
+
 function extractVideo(pageUrl) {
+
     if (!pageUrl) {
         addDebug(
             "[extract] URL vacia"
@@ -876,6 +926,13 @@ function extractVideo(pageUrl) {
         host.indexOf("do7go") !== -1
     ) {
         return doodExtract(pageUrl);
+    }
+
+    var sw =
+        streamwishExtract(pageUrl);
+
+    if (sw) {
+        return sw;
     }
 
     return genericExtract(pageUrl);
@@ -961,326 +1018,406 @@ function mkDetail(
 // =========================================================
 // PLAYERPRO
 // =========================================================
+// API Xtream (player_api.php) - port v46
+//  - Listados reales del servidor: get_live_streams / get_vod_streams / get_series
+//  - Detalles y reproducción: candidatas Xtream (/live/, /stream/gen/, /movie/, get.php)
 
-function mgGet(path) {
-    var url = "";
+var _xtCache = {};
 
+function xtGet(action, extra) {
     try {
-        var sep =
-            path.indexOf("?") !== -1
-                ? "&"
-                : "?";
+        var cacheKey = action;
 
-        url =
-            IPTV_URL +
-            path +
-            sep +
+        if (extra) {
+            var ek = Object.keys(extra).sort();
+            for (var ei = 0; ei < ek.length; ei++) {
+                cacheKey += "|" + ek[ei] + "=" + extra[ek[ei]];
+            }
+        }
+
+        if (_xtCache[cacheKey] !== undefined) {
+            return _xtCache[cacheKey];
+        }
+
+        var q =
             "username=" +
             encodeURIComponent(IPTV_USER) +
             "&password=" +
-            encodeURIComponent(IPTV_PASS);
+            encodeURIComponent(IPTV_PASS) +
+            "&action=" +
+            encodeURIComponent(action);
+
+        if (extra) {
+            for (var k in extra) {
+                if (extra.hasOwnProperty(k)) {
+                    q += "&" + k + "=" + encodeURIComponent(extra[k]);
+                }
+            }
+        }
+
+        var url =
+            IPTV_URL +
+            "/player_api.php?" +
+            q;
 
         var response =
             http.GET(
                 url,
                 {
-                    "User-Agent": "Magma/8"
+                    "User-Agent": DALVIK_UA,
+                    "Accept": "application/json"
                 }
             );
 
-        // DEBUG v47: dejamos constancia de cada llamada, exitosa o no.
-        if (!response) {
-            _diag +=
-                "[mgGet] " + url +
-                " -> http.GET devolvió null/undefined\n";
+        var body =
+            (response && response.body)
+                ? response.body
+                : "";
+
+        if (!body) {
             return null;
         }
 
-        if (!response.body) {
-            _diag +=
-                "[mgGet] " + url +
-                " -> status=" + String(response.status) +
-                " sin body\n";
+        var data = null;
+
+        try {
+            data = JSON.parse(body);
+        } catch (e) {
+            addDebug("[xt] JSON inválido action=" + action);
             return null;
         }
 
-        _diag +=
-            "[mgGet] " + url +
-            " -> status=" + String(response.status) +
-            " bodyLen=" + response.body.length +
-            " primeros200=" +
-            response.body.substring(0, 200).replace(/\s+/g, " ") +
-            "\n";
+        _xtCache[cacheKey] = data;
 
-        return JSON.parse(
-            response.body
-        );
+        return data;
 
     } catch (e) {
-        _diag +=
-            "[mgGet] " + url +
-            " -> EXCEPTION: " + String(e) + "\n";
+        addDebug("[xt] EXCEPTION action=" + action + ": " + String(e));
         return null;
+    }
+}
+
+function xtLists() {
+    return {
+        live: xtGet("get_live_streams") || [],
+        vod: xtGet("get_vod_streams") || [],
+        series: xtGet("get_series") || []
+    };
+}
+
+function xtThumb(item) {
+    if (!item) return "";
+    return fixImg(
+        item.stream_icon ||
+        item.cover ||
+        item.backdrop_path ||
+        item.backdrop ||
+        item.icon ||
+        ""
+    );
+}
+
+function xtFind(list, id) {
+    id = String(id);
+
+    for (var i = 0; i < list.length; i++) {
+        var item = list[i];
+
+        if (
+            String(item.stream_id) === id ||
+            String(item.series_id) === id
+        ) {
+            return item;
+        }
+    }
+
+    return null;
+}
+
+function xtLiveUrl(id) {
+    return (
+        IPTV_URL +
+        "/live/" +
+        encodeURIComponent(IPTV_USER) +
+        "/" +
+        encodeURIComponent(IPTV_PASS) +
+        "/" +
+        id +
+        ".m3u8"
+    );
+}
+
+function xtGetPlayCandidates(kind, id) {
+    var u = encodeURIComponent(IPTV_USER);
+    var p = encodeURIComponent(IPTV_PASS);
+    var out = [];
+
+    out.push({
+        url: IPTV_URL + "/stream/gen/" + id,
+        name: "stream/gen",
+        hls: true
+    });
+
+    if (kind === "live") {
+        out.push({
+            url: xtLiveUrl(id),
+            name: "Live HLS",
+            hls: true
+        });
+        out.push({
+            url:
+                IPTV_URL +
+                "/get.php?username=" + u +
+                "&password=" + p +
+                "&type=live&stream_id=" + id,
+            name: "get.php live",
+            hls: true
+        });
+    }
+
+    if (kind === "vod") {
+        out.push({
+            url:
+                IPTV_URL +
+                "/movie/" + u + "/" + p + "/" + id + ".mp4",
+            name: "mp4",
+            hls: false
+        });
+        out.push({
+            url:
+                IPTV_URL +
+                "/movie/" + u + "/" + p + "/" + id + ".mkv",
+            name: "mkv",
+            hls: false
+        });
+        out.push({
+            url:
+                IPTV_URL +
+                "/get.php?username=" + u +
+                "&password=" + p +
+                "&type=movie&stream_id=" + id,
+            name: "get.php movie",
+            hls: false
+        });
+    }
+
+    return out;
+}
+
+function xtAddSource(sources, cand) {
+    try {
+        if (!cand || !cand.url) return;
+
+        if (cand.hls) {
+            var h = mkHls(cand.url, cand.name);
+
+            if (h) {
+                sources.push(h);
+            }
+        } else {
+            var mp4 = new MP4Source({
+                url: cand.url,
+                name: cand.name,
+                duration: 0
+            });
+
+            sources.push(mp4);
+        }
+
+    } catch (e) {
+        addDebug("[xt] source falló: " + (cand && cand.name));
     }
 }
 
 function mgHome() {
     var videos = [];
+    var L = xtLists();
 
-    try {
-        var data =
-            mgGet("/movies/resume");
+    for (
+        var i = 0;
+        i < L.live.length && videos.length < 40;
+        i++
+    ) {
+        var lv = L.live[i];
 
-        if (
-            !data ||
-            !data.movies
-        ) {
-            // DEBUG v50: _diag es global pero GrayJay parece correr cada
-            // función del plugin (getHome, getContentDetails, ...) en una
-            // instancia de script separada, así que _diag llega vacío
-            // cuando después tocás el ítem y se llama a getContentDetails().
-            // Ahora el diagnóstico se incrusta directamente en la URL del
-            // ítem, que sí viaja intacta hasta doDetails().
-            videos.push(
-                mkVideo(
-                    "mg_debug",
-                    "⚠️ DEBUG Magma: catálogo vacío (tocá para ver detalle)",
-                    "",
-                    "magma://debug?data=" +
-                    encodeURIComponent(
-                        _diag.substring(0, 1500)
-                    ),
-                    "Magma"
-                )
-            );
+        videos.push(
+            mkVideo(
+                "mg_live_" + lv.stream_id,
+                "[Live] " + (lv.name || ""),
+                xtThumb(lv),
+                "magma://live/" + lv.stream_id,
+                "Magma"
+            )
+        );
+    }
 
-            return videos;
-        }
+    for (
+        var j = 0;
+        j < L.vod.length && videos.length < 80;
+        j++
+    ) {
+        var v = L.vod[j];
 
-        for (
-            var i = 0;
-            i < data.movies.length &&
-            i < 40;
-            i++
-        ) {
-            var m =
-                data.movies[i];
+        videos.push(
+            mkVideo(
+                "mg_m_" + v.stream_id,
+                v.name || "",
+                xtThumb(v),
+                "magma://movie/" + v.stream_id,
+                "Magma"
+            )
+        );
+    }
 
-            if (m.b) {
-                videos.push(
-                    mkVideo(
-                        "mg_m_" + m.a,
+    for (
+        var k = 0;
+        k < L.series.length && videos.length < 100;
+        k++
+    ) {
+        var s = L.series[k];
 
-                        (m.l
-                            ? "[" + m.l + "] "
-                            : "") +
-                        m.b +
-                        (m.f
-                            ? " (" + m.f + ")"
-                            : ""),
-
-                        fixImg(m.d) ||
-                        fixImg(m.c) ||
-                        "",
-
-                        "magma://movie/" +
-                        m.a,
-
-                        "Magma"
-                    )
-                );
-            }
-        }
-
-    } catch (e) {}
+        videos.push(
+            mkVideo(
+                "mg_s_" + s.series_id,
+                "[Serie] " + (s.name || ""),
+                xtThumb(s),
+                "magma://serie/" + s.series_id,
+                "Magma"
+            )
+        );
+    }
 
     return videos;
 }
 
 function mgSearch(query) {
     var videos = [];
+    var q = String(query || "").toLowerCase().trim();
 
-    var q =
-        String(query || "")
-            .toLowerCase();
+    if (!q) return videos;
 
-    try {
-        var data =
-            mgGet("/movies/resume");
+    var L = xtLists();
 
-        if (
-            data &&
-            data.movies
-        ) {
-            for (
-                var i = 0;
-                i < data.movies.length &&
-                videos.length < 30;
-                i++
-            ) {
-                var m =
-                    data.movies[i];
-
-                if (
-                    String(m.b || "")
-                        .toLowerCase()
-                        .indexOf(q) !== -1 ||
-
-                    String(m.i || "")
-                        .toLowerCase()
-                        .indexOf(q) !== -1
-                ) {
-                    videos.push(
-                        mkVideo(
-                            "mg_m_" + m.a,
-
-                            (m.l
-                                ? "[" + m.l + "] "
-                                : "") +
-                            m.b +
-                            (m.f
-                                ? " (" + m.f + ")"
-                                : ""),
-
-                            fixImg(m.d) ||
-                            fixImg(m.c) ||
-                            "",
-
-                            "magma://movie/" +
-                            m.a,
-
-                            "Magma"
-                        )
-                    );
-                }
-            }
-        }
-
-        var sdata =
-            mgGet("/series");
+    for (var i = 0; i < L.live.length; i++) {
+        var lv = L.live[i];
 
         if (
-            sdata &&
-            sdata.series
+            String(lv.name || "")
+                .toLowerCase()
+                .indexOf(q) !== -1
         ) {
-            for (
-                var j = 0;
-                j < sdata.series.length &&
-                videos.length < 60;
-                j++
-            ) {
-                var s =
-                    sdata.series[j];
-
-                if (
-                    String(s.b || "")
-                        .toLowerCase()
-                        .indexOf(q) !== -1 ||
-
-                    String(s.i || "")
-                        .toLowerCase()
-                        .indexOf(q) !== -1
-                ) {
-                    videos.push(
-                        mkVideo(
-                            "mg_s_" + s.a,
-                            "[Serie] " + s.b,
-                            fixImg(s.d) ||
-                            fixImg(s.c) ||
-                            "",
-                            "magma://serie/" +
-                            s.a,
-                            "Magma"
-                        )
-                    );
-                }
-            }
-        }
-
-        // DEBUG v48/v50: si no hubo NINGÚN resultado de Magma (ni película
-        // ni serie), agregamos el mismo ítem de diagnóstico, con el log
-        // incrustado en la URL (ver nota en mgHome()).
-        if (videos.length === 0) {
             videos.push(
                 mkVideo(
-                    "mg_debug",
-                    "⚠️ DEBUG Magma: búsqueda sin resultados (tocá para ver detalle)",
-                    "",
-                    "magma://debug?data=" +
-                    encodeURIComponent(
-                        _diag.substring(0, 1500)
-                    ),
+                    "mg_live_" + lv.stream_id,
+                    "[Live] " + (lv.name || ""),
+                    xtThumb(lv),
+                    "magma://live/" + lv.stream_id,
                     "Magma"
                 )
             );
         }
+    }
 
-    } catch (e) {}
+    for (var j = 0; j < L.vod.length; j++) {
+        var v = L.vod[j];
+
+        if (
+            String(v.name || "")
+                .toLowerCase()
+                .indexOf(q) !== -1
+        ) {
+            videos.push(
+                mkVideo(
+                    "mg_m_" + v.stream_id,
+                    v.name || "",
+                    xtThumb(v),
+                    "magma://movie/" + v.stream_id,
+                    "Magma"
+                )
+            );
+        }
+    }
+
+    for (var k = 0; k < L.series.length; k++) {
+        var s = L.series[k];
+
+        if (
+            String(s.name || "")
+                .toLowerCase()
+                .indexOf(q) !== -1
+        ) {
+            videos.push(
+                mkVideo(
+                    "mg_s_" + s.series_id,
+                    "[Serie] " + (s.name || ""),
+                    xtThumb(s),
+                    "magma://serie/" + s.series_id,
+                    "Magma"
+                )
+            );
+        }
+    }
 
     return videos;
 }
 
-// =========================================================
-// PELÍCULA
-// =========================================================
-
 function mgMovieDetails(id) {
-    _debugLog = "";
+    var item = xtFind(xtLists().vod, id);
 
-    var data =
-        mgGet("/movies/" + id);
+    var title = item ? (item.name || "") : ("Película " + id);
+    var thumb = xtThumb(item);
+    var url = "magma://movie/" + id;
 
-    if (!data) {
-        return mkDetail(
-            "mg_m_" + id,
-            "Sin resultado",
-            "",
-            "magma://movie/" + id,
-            [],
-            ""
-        );
+    var desc = title;
+
+    var info =
+        xtGet("get_vod_info", { vod_id: id });
+
+    var infoObj =
+        (info && info.info)
+            ? info.info
+            : (item || {});
+
+    if (infoObj) {
+        if (infoObj.plot) {
+            desc += "\n\n" + infoObj.plot;
+        }
+
+        var release =
+            infoObj.releaseDate ||
+            infoObj.release;
+
+        if (release) {
+            desc += "\nAño: " + release;
+        }
+
+        if (infoObj.rating) {
+            desc += "\nRating: " + infoObj.rating + "/10";
+        } else if (item && item.rating_5based) {
+            desc += "\nRating: " + (item.rating_5based / 2) + "/5";
+        }
     }
 
-    var title =
-        data.b || "";
-
-    var thumb =
-        fixImg(data.d) ||
-        fixImg(data.c) ||
-        "";
-
-    var desc =
-        data.e || "";
-
-    var linksData =
-        mgGet(
-            "/movies/" +
-            id +
-            "/links"
-        );
+    desc += "\n\nServidor: " + IPTV_URL;
 
     var sources = [];
 
-    if (
-        linksData &&
-        linksData.length
-    ) {
-        desc +=
-            "\n\n--- Servidores ---";
+    var linksData =
+        xtGet("get_vod_links", { vod_id: id });
+
+    if (linksData && linksData.length) {
+        desc += "\n\n--- Servidores ---";
 
         var tried = 0;
 
         for (
             var i = 0;
-            i < linksData.length &&
-            tried < MAX_TRY;
+            i < linksData.length && tried < MAX_TRY;
             i++
         ) {
-            var link =
-                linksData[i];
+            var link = linksData[i];
 
-            var linkUrl =
-                link.a || "";
+            var linkUrl = link.url || "";
 
             if (!linkUrl) {
                 continue;
@@ -1289,16 +1426,12 @@ function mgMovieDetails(id) {
             tried++;
 
             var serverName =
-                (link.b || "Servidor") +
+                getHost(linkUrl) +
                 " [" +
-                (link.c || "") +
+                (link.language || "") +
+                "/" +
+                (link.quality || "") +
                 "]";
-
-            desc +=
-                "\n" +
-                serverName +
-                " → " +
-                linkUrl;
 
             addDebug(
                 "[movie] probando " +
@@ -1310,27 +1443,25 @@ function mgMovieDetails(id) {
             );
 
             var extracted =
-                extractVideo(
-                    linkUrl
-                );
+                extractVideo(linkUrl);
 
             if (extracted) {
-                var source =
+                var h =
                     mkHls(
                         extracted,
                         serverName
                     );
 
-                if (source) {
-                    sources.push(
-                        source
-                    );
-
-                    addDebug(
-                        "[movie] FUENTE OK: " +
-                        serverName
-                    );
+                if (h) {
+                    sources.push(h);
                 }
+
+                addDebug(
+                    "[movie] FUENTE OK: " +
+                    serverName
+                );
+
+                break;
             } else {
                 addDebug(
                     "[movie] FALLÓ: " +
@@ -1338,18 +1469,14 @@ function mgMovieDetails(id) {
                 );
             }
         }
+    }
 
-        if (
-            linksData.length >
-            tried
-        ) {
-            desc +=
-                "\n\n(" +
-                (
-                    linksData.length -
-                    tried
-                ) +
-                " servidores más sin probar)";
+    if (sources.length === 0) {
+        var cands =
+            xtGetPlayCandidates("vod", id);
+
+        for (var c = 0; c < cands.length; c++) {
+            xtAddSource(sources, cands[c]);
         }
     }
 
@@ -1357,347 +1484,120 @@ function mgMovieDetails(id) {
         "mg_m_" + id,
         title,
         thumb,
-        "magma://movie/" + id,
+        url,
         sources,
         desc
     );
 }
 
-// =========================================================
-// EPISODIO (resolución de fuentes reutilizable)
-// =========================================================
+function mgLiveDetails(id) {
+    var item = xtFind(xtLists().live, id);
 
-// FIX v42: extraída de mgEpisodeLinks para poder reutilizarla desde
-// mgSerieDetails y precargar el Episodio 1 sin duplicar código.
-function resolveEpisodeSources(id, season, episode) {
-    var linksData =
-        mgGet(
-            "/series/" +
-            id +
-            "/links/" +
-            season +
-            "/" +
-            episode
-        );
+    var title = item ? (item.name || "") : ("Canal " + id);
+    var thumb = xtThumb(item);
+    var url = "magma://live/" + id;
+
+    var desc = title;
+
+    desc +=
+        "\nCategoría: " +
+        ((item && item.category_id) || "-");
+
+    desc += "\n\nServidor: " + IPTV_URL;
 
     var sources = [];
-    var desc = "";
 
-    if (
-        linksData &&
-        linksData.length
-    ) {
-        desc +=
-            "\n\n--- Servidores ---";
-
-        var tried = 0;
-
-        for (
-            var i = 0;
-            i < linksData.length &&
-            tried < MAX_TRY;
-            i++
-        ) {
-            var link =
-                linksData[i];
-
-            var linkUrl =
-                link.a || "";
-
-            if (!linkUrl) {
-                continue;
-            }
-
-            tried++;
-
-            var serverName =
-                (link.b || "Servidor") +
-                " [" +
-                (link.c || "") +
-                "]";
-
-            desc +=
-                "\n" +
-                serverName +
-                " → " +
-                linkUrl;
-
-            addDebug(
-                "[episode] probando " +
-                tried +
-                "/" +
-                MAX_TRY +
-                ": " +
-                linkUrl
-            );
-
-            var extracted =
-                extractVideo(
-                    linkUrl
-                );
-
-            if (extracted) {
-                var source =
-                    mkHls(
-                        extracted,
-                        serverName
-                    );
-
-                if (source) {
-                    sources.push(
-                        source
-                    );
-
-                    addDebug(
-                        "[episode] FUENTE OK: " +
-                        serverName
-                    );
-                }
-            } else {
-                addDebug(
-                    "[episode] FALLÓ: " +
-                    serverName
-                );
-            }
-        }
-    }
-
-    return {
-        sources: sources,
-        desc: desc
-    };
-}
-
-// =========================================================
-// SERIES
-// =========================================================
-
-// FIX v42: antes devolvía sources=[] siempre (solo texto con la lista
-// de episodios en la descripción, nada tocable ni reproducible). Ahora
-// resuelve y precarga el Episodio 1 de la Temporada 1 para que la
-// serie arranque reproduciendo directo al tocarla. La navegación al
-// resto de episodios se hace vía source.getContentRecommendations.
-function mgSerieDetails(id) {
-    _debugLog = "";
-
-    var data =
-        mgGet("/series/" + id);
-
-    if (!data) {
-        return mkDetail(
-            "mg_s_" + id,
-            "Sin resultado",
-            "",
-            "magma://serie/" + id,
-            [],
-            ""
-        );
-    }
-
-    var title =
-        data.b || "";
-
-    var thumb =
-        fixImg(data.d) ||
-        fixImg(data.c) ||
+    var direct =
+        (item &&
+            (item.direct_source ||
+                item.url)) ||
         "";
 
-    var desc =
-        (data.e || "") +
-        "\n\n--- Temporadas y Episodios ---";
+    if (direct) {
+        desc += "\nFuente directa: " + direct;
 
-    var seasons =
-        data.seasons ||
-        data.f ||
-        [];
+        var h =
+            mkHls(
+                cleanUrl(direct),
+                "Directo"
+            );
 
-    if (
-        typeof seasons === "number"
-    ) {
-        seasons = [];
-    }
-
-    var firstSeasonNum = null;
-    var firstEpisodeNum = null;
-
-    for (
-        var si = 0;
-        si < seasons.length;
-        si++
-    ) {
-        var season =
-            seasons[si];
-
-        var seasonNum =
-            season.num ||
-            season.a ||
-            (si + 1);
-
-        var episodes =
-            season.episodes ||
-            season.b ||
-            [];
-
-        desc +=
-            "\n\nTemporada " +
-            seasonNum +
-            ":";
-
-        for (
-            var ei = 0;
-            ei < episodes.length;
-            ei++
-        ) {
-            var ep =
-                episodes[ei];
-
-            var epNum =
-                ep.num ||
-                ep.a ||
-                (ei + 1);
-
-            if (firstSeasonNum === null) {
-                firstSeasonNum = seasonNum;
-                firstEpisodeNum = epNum;
-            }
-
-            desc +=
-                "\n  Ep " +
-                epNum +
-                " → magma://serie/" +
-                id +
-                "/" +
-                seasonNum +
-                "/" +
-                epNum;
+        if (h) {
+            sources.push(h);
         }
     }
 
-    var sources = [];
+    if (sources.length === 0) {
+        var cands =
+            xtGetPlayCandidates("live", id);
 
-    if (firstSeasonNum !== null) {
-        desc +=
-            "\n\n--- Reproduciendo por defecto: T" +
-            firstSeasonNum +
-            "E" +
-            firstEpisodeNum +
-            " ---";
-
-        var resolved =
-            resolveEpisodeSources(
-                id,
-                firstSeasonNum,
-                firstEpisodeNum
-            );
-
-        sources = resolved.sources;
-        desc += resolved.desc;
+        for (var i = 0; i < cands.length; i++) {
+            xtAddSource(sources, cands[i]);
+        }
     }
+
+    return mkDetail(
+        "mg_live_" + id,
+        title,
+        thumb,
+        url,
+        sources,
+        desc
+    );
+}
+
+function mgSerieDetails(id) {
+    var item = xtFind(xtLists().series, id);
+
+    var title = item ? (item.name || "") : ("Serie " + id);
+    var thumb = xtThumb(item);
+    var url = "magma://serie/" + id;
+
+    var desc = title;
+
+    var info =
+        xtGet("get_series_info", { series_id: id });
+
+    var infoObj =
+        (info && info.info)
+            ? info.info
+            : (item || {});
+
+    if (infoObj) {
+        if (infoObj.plot) {
+            desc += "\n\n" + infoObj.plot;
+        }
+
+        var release =
+            infoObj.releaseDate ||
+            infoObj.release;
+
+        if (release) {
+            desc += "\nAño: " + release;
+        }
+
+        if (infoObj.rating) {
+            desc += "\nRating: " + infoObj.rating + "/10";
+        } else if (item && item.rating_5based) {
+            desc += "\nRating: " + (item.rating_5based / 2) + "/5";
+        }
+    }
+
+    desc += "\n\nServidor: " + IPTV_URL;
+    desc += "\n\n⚠️ El servidor no expone listado de episodios (" + IPTV_URL + " no responde get_series_links).";
 
     return mkDetail(
         "mg_s_" + id,
         title,
         thumb,
-        "magma://serie/" + id,
-        sources,
+        url,
+        [],
         desc
     );
 }
 
-// =========================================================
-// EPISODIO
-// =========================================================
-
-function mgEpisodeLinks(
-    id,
-    season,
-    episode
-) {
-    _debugLog = "";
-
-    var data =
-        mgGet("/series/" + id);
-
-    if (!data) {
-        return mkDetail(
-            "mg_se_" + id,
-            "Sin resultado",
-            "",
-            "",
-            [],
-            ""
-        );
-    }
-
-    var title =
-        (data.b || "") +
-        " S" +
-        season +
-        "E" +
-        episode;
-
-    var thumb =
-        fixImg(data.d) ||
-        fixImg(data.c) ||
-        "";
-
-    var resolved =
-        resolveEpisodeSources(
-            id,
-            season,
-            episode
-        );
-
-    var sources = resolved.sources;
-    var desc = title + resolved.desc;
-
-    var epNum =
-        parseInt(
-            episode,
-            10
-        );
-
-    if (epNum > 1) {
-        desc +=
-            "\n\n← Ep Anterior: magma://serie/" +
-            id +
-            "/" +
-            season +
-            "/" +
-            (epNum - 1);
-    }
-
-    desc +=
-        "\n→ Ep Siguiente: magma://serie/" +
-        id +
-        "/" +
-        season +
-        "/" +
-        (epNum + 1);
-
-    return mkDetail(
-        "mg_se_" +
-        id +
-        "_" +
-        season +
-        "_" +
-        episode,
-
-        title,
-
-        thumb,
-
-        "magma://serie/" +
-        id +
-        "/" +
-        season +
-        "/" +
-        episode,
-
-        sources,
-
-        desc
-    );
+function mgEpisodeLinks(id, season, episode) {
+    return mgSerieDetails(id);
 }
 
 // =========================================================
@@ -2108,43 +2008,6 @@ function doDetails(url) {
         );
     }
 
-    // DEBUG v50: leemos el diagnóstico desde la URL (query param "data"),
-    // no desde _diag (que llega vacío por ser una ejecución de script
-    // separada — ver nota en mgHome()).
-    if (url.indexOf("magma://debug") === 0) {
-        var diagFromUrl = "(sin datos en la URL)";
-
-        var qIdx = url.indexOf("?data=");
-
-        if (qIdx !== -1) {
-            try {
-                diagFromUrl =
-                    decodeURIComponent(
-                        url.substring(qIdx + 6)
-                    );
-            } catch (e) {
-                diagFromUrl =
-                    "EXCEPTION decodificando: " +
-                    String(e);
-            }
-        }
-
-        return mkDetail(
-            "mg_debug",
-            "Diagnóstico Magma",
-            "",
-            url,
-            [
-                mkHls(
-                    "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
-                    "TEST (ignorar, esto es solo para poder ver el diagnóstico)"
-                )
-            ],
-            "=== DIAGNÓSTICO mgGet ===\n" +
-            diagFromUrl
-        );
-    }
-
     if (
         url.indexOf(
             "jkanime.net"
@@ -2158,8 +2021,6 @@ function doDetails(url) {
             "magma://movie/"
         ) === 0
     ) {
-        // FIX v43: era /pp:\/\/movie\/(\d+)/ (nunca hacía match contra
-        // "magma://movie/123"). Ahora coincide con el esquema real.
         var mm =
             url.match(
                 /magma:\/\/movie\/(\d+)/
@@ -2174,24 +2035,26 @@ function doDetails(url) {
 
     if (
         url.indexOf(
+            "magma://live/"
+        ) === 0
+    ) {
+        var ml =
+            url.match(
+                /magma:\/\/live\/(\d+)/
+            );
+
+        if (ml) {
+            return mgLiveDetails(
+                ml[1]
+            );
+        }
+    }
+
+    if (
+        url.indexOf(
             "magma://serie/"
         ) === 0
     ) {
-        // FIX v43: era /pp:\/\/serie\/(\d+)\/(\d+)\/(\d+)/, idem arriba.
-        var se =
-            url.match(
-                /magma:\/\/serie\/(\d+)\/(\d+)\/(\d+)/
-            );
-
-        if (se) {
-            return mgEpisodeLinks(
-                se[1],
-                se[2],
-                se[3]
-            );
-        }
-
-        // FIX v43: era /pp:\/\/serie\/(\d+)/, idem arriba.
         var ss =
             url.match(
                 /magma:\/\/serie\/(\d+)/
@@ -2332,91 +2195,31 @@ function doRecommendations(url) {
 
         var id = se[1];
 
-        var data =
-            mgGet("/series/" + id);
-
-        if (!data) {
-            return videos;
-        }
-
-        var thumb =
-            fixImg(data.d) ||
-            fixImg(data.c) ||
-            "";
-
-        var seriesTitle =
-            data.b || "Serie";
-
-        var seasons =
-            data.seasons ||
-            data.f ||
-            [];
-
-        if (
-            typeof seasons === "number"
-        ) {
-            seasons = [];
-        }
+        var L = xtLists();
 
         for (
-            var si = 0;
-            si < seasons.length;
-            si++
+            var i = 0;
+            i < L.series.length && videos.length < 12;
+            i++
         ) {
-            var season =
-                seasons[si];
+            var s = L.series[i];
 
-            var seasonNum =
-                season.num ||
-                season.a ||
-                (si + 1);
-
-            var episodes =
-                season.episodes ||
-                season.b ||
-                [];
-
-            for (
-                var ei = 0;
-                ei < episodes.length;
-                ei++
+            if (
+                String(s.series_id) ===
+                String(id)
             ) {
-                var ep =
-                    episodes[ei];
-
-                var epNum =
-                    ep.num ||
-                    ep.a ||
-                    (ei + 1);
-
-                videos.push(
-                    mkVideo(
-                        "mg_se_" +
-                        id +
-                        "_" +
-                        seasonNum +
-                        "_" +
-                        epNum,
-
-                        seriesTitle +
-                        " S" +
-                        seasonNum +
-                        "E" +
-                        epNum,
-
-                        thumb,
-
-                        "magma://serie/" +
-                        id +
-                        "/" +
-                        seasonNum +
-                        "/" +
-                        epNum,
-
-                        "Magma"
-                    )
-                );
+                continue;
             }
+
+            videos.push(
+                mkVideo(
+                    "mg_s_" + s.series_id,
+                    "[Serie] " + (s.name || ""),
+                    xtThumb(s),
+                    "magma://serie/" + s.series_id,
+                    "Magma"
+                )
+            );
         }
 
     } catch (e) {}
