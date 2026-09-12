@@ -1,22 +1,28 @@
-// Magma GrayJay Source v43
+// PlayPelis GrayJay Source v43
 // Multi-servidor + HLS + diagnóstico
-// Cambios v43 (respecto a v42):
-//  - FIX CRÍTICO: doDetails() buscaba el patrón "pp://movie/(\d+)" y
-//    "pp://serie/(\d+)/(\d+)/(\d+)" dentro de una URL "magma://...".
-//    La cadena "magma" no contiene la subcadena "pp", por lo que esos
-//    regex NUNCA hacían match. Resultado: tanto películas como series
-//    entraban en el bloque "if (url.indexOf('magma://movie/') === 0)"
-//    pero salían sin devolver nada (mm/se/ss siempre null), cayendo en
-//    el "return mkDetail('', '', '', url, [], '')" final -> sin
-//    servidores, sin video, pantalla vacía. Se corrigen los 3 regex
-//    para que coincidan con el esquema real "magma://".
-var PID = "8a2f4b7e-3c1d-4f6a-9b8e-5d2c1a9f6e40";
+// Cambios v42:
+//  - fixImg: soporta paths tipo TMDB con barra inicial ("/xxx.jpg") que antes devolvían "" (portadas rotas)
+//  - Nuevo source.getContentRecommendations: expone cada episodio como PlatformVideo navegable
+//  - ppSerieDetails: ahora resuelve y precarga las fuentes del Episodio 1 (S1E1) para que la serie
+//    arranque reproduciendo directamente al tocarla, en vez de quedar sin video
+// Cambios v43:
+//  - PID: era idéntico al del plugin Magma (copy-paste de la plantilla sin regenerar).
+//    Con ambos plugins instalados a la vez, GrayJay podía enrutar mal el contenido
+//    entre uno y otro. Se generó un id propio y único.
+//  - IPTV_URL/USER/PASS: el backend propio (plpro.org) tiene servidores caídos.
+//    Se cambió al backend de Magma (tv.m3uts.xyz), que tiene servidores actualizados
+//    y funcionando. Recordar agregar "tv.m3uts.xyz" a allowUrls en el config.
+var PID = "d5e7b1b9-c631-43e0-8cff-45d9e2c90a74";
 var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 
-var MGID = new PlatformID("Magma", "Magma", PID);
+var PPID = new PlatformID("PlayPelis", "PlayPelis", PID);
 var _settings = {};
 var _debugLog = "";
 
+// Cambiado a pedido del usuario: el backend propio de PlPro (plpro.org)
+// tiene servidores caídos/desactualizados. Se apunta al mismo backend
+// que usa el plugin Magma (tv.m3uts.xyz), que sí tiene servidores
+// funcionando.
 var IPTV_URL = "https://tv.m3uts.xyz";
 var IPTV_USER = "m";
 var IPTV_PASS = "m";
@@ -184,7 +190,7 @@ function mkThumb(url) {
 function mkVideo(id, title, thumb, url, authorName) {
     return new PlatformVideo({
         id: new PlatformID(
-            "Magma",
+            "PlayPelis",
             String(id),
             PID
         ),
@@ -194,9 +200,9 @@ function mkVideo(id, title, thumb, url, authorName) {
         thumbnails: mkThumb(thumb),
 
         author: new PlatformAuthorLink(
-            MGID,
-            authorName || "Magma",
-            "https://magma.app",
+            PPID,
+            authorName || "PlayPelis",
+            "https://playpelis.app",
             "",
             0
         ),
@@ -862,7 +868,7 @@ function mkDetail(
 
     return new PlatformVideoDetails({
         id: new PlatformID(
-            "Magma",
+            "PlayPelis",
             String(id),
             PID
         ),
@@ -872,9 +878,9 @@ function mkDetail(
         thumbnails: mkThumb(thumb),
 
         author: new PlatformAuthorLink(
-            MGID,
-            "Magma",
-            "https://magma.app",
+            PPID,
+            "PlayPelis",
+            "https://playpelis.app",
             "",
             0
         ),
@@ -896,7 +902,7 @@ function mkDetail(
 // PLAYERPRO
 // =========================================================
 
-function mgGet(path) {
+function ppGet(path) {
     try {
         var sep =
             path.indexOf("?") !== -1
@@ -916,7 +922,7 @@ function mgGet(path) {
             http.GET(
                 url,
                 {
-                    "User-Agent": "Magma/8"
+                    "User-Agent": "PLPro/8"
                 }
             );
 
@@ -936,12 +942,12 @@ function mgGet(path) {
     }
 }
 
-function mgHome() {
+function ppHome() {
     var videos = [];
 
     try {
         var data =
-            mgGet("/movies/resume");
+            ppGet("/movies/resume");
 
         if (
             !data ||
@@ -962,7 +968,7 @@ function mgHome() {
             if (m.b) {
                 videos.push(
                     mkVideo(
-                        "mg_m_" + m.a,
+                        "pp_m_" + m.a,
 
                         (m.l
                             ? "[" + m.l + "] "
@@ -976,10 +982,10 @@ function mgHome() {
                         fixImg(m.c) ||
                         "",
 
-                        "magma://movie/" +
+                        "pp://movie/" +
                         m.a,
 
-                        "Magma"
+                        "PlayPelis"
                     )
                 );
             }
@@ -990,7 +996,7 @@ function mgHome() {
     return videos;
 }
 
-function mgSearch(query) {
+function ppSearch(query) {
     var videos = [];
 
     var q =
@@ -999,7 +1005,7 @@ function mgSearch(query) {
 
     try {
         var data =
-            mgGet("/movies/resume");
+            ppGet("/movies/resume");
 
         if (
             data &&
@@ -1025,7 +1031,7 @@ function mgSearch(query) {
                 ) {
                     videos.push(
                         mkVideo(
-                            "mg_m_" + m.a,
+                            "pp_m_" + m.a,
 
                             (m.l
                                 ? "[" + m.l + "] "
@@ -1039,10 +1045,10 @@ function mgSearch(query) {
                             fixImg(m.c) ||
                             "",
 
-                            "magma://movie/" +
+                            "pp://movie/" +
                             m.a,
 
-                            "Magma"
+                            "PlayPelis"
                         )
                     );
                 }
@@ -1050,7 +1056,7 @@ function mgSearch(query) {
         }
 
         var sdata =
-            mgGet("/series");
+            ppGet("/series");
 
         if (
             sdata &&
@@ -1076,14 +1082,14 @@ function mgSearch(query) {
                 ) {
                     videos.push(
                         mkVideo(
-                            "mg_s_" + s.a,
+                            "pp_s_" + s.a,
                             "[Serie] " + s.b,
                             fixImg(s.d) ||
                             fixImg(s.c) ||
                             "",
-                            "magma://serie/" +
+                            "pp://serie/" +
                             s.a,
-                            "Magma"
+                            "PlayPelis"
                         )
                     );
                 }
@@ -1099,18 +1105,18 @@ function mgSearch(query) {
 // PELÍCULA
 // =========================================================
 
-function mgMovieDetails(id) {
+function ppMovieDetails(id) {
     _debugLog = "";
 
     var data =
-        mgGet("/movies/" + id);
+        ppGet("/movies/" + id);
 
     if (!data) {
         return mkDetail(
-            "mg_m_" + id,
+            "pp_m_" + id,
             "Sin resultado",
             "",
-            "magma://movie/" + id,
+            "pp://movie/" + id,
             [],
             ""
         );
@@ -1128,7 +1134,7 @@ function mgMovieDetails(id) {
         data.e || "";
 
     var linksData =
-        mgGet(
+        ppGet(
             "/movies/" +
             id +
             "/links"
@@ -1229,10 +1235,10 @@ function mgMovieDetails(id) {
     }
 
     return mkDetail(
-        "mg_m_" + id,
+        "pp_m_" + id,
         title,
         thumb,
-        "magma://movie/" + id,
+        "pp://movie/" + id,
         sources,
         desc
     );
@@ -1242,11 +1248,11 @@ function mgMovieDetails(id) {
 // EPISODIO (resolución de fuentes reutilizable)
 // =========================================================
 
-// FIX v42: extraída de mgEpisodeLinks para poder reutilizarla desde
-// mgSerieDetails y precargar el Episodio 1 sin duplicar código.
+// FIX v42: extraída de ppEpisodeLinks para poder reutilizarla desde
+// ppSerieDetails y precargar el Episodio 1 sin duplicar código.
 function resolveEpisodeSources(id, season, episode) {
     var linksData =
-        mgGet(
+        ppGet(
             "/series/" +
             id +
             "/links/" +
@@ -1352,18 +1358,18 @@ function resolveEpisodeSources(id, season, episode) {
 // resuelve y precarga el Episodio 1 de la Temporada 1 para que la
 // serie arranque reproduciendo directo al tocarla. La navegación al
 // resto de episodios se hace vía source.getContentRecommendations.
-function mgSerieDetails(id) {
+function ppSerieDetails(id) {
     _debugLog = "";
 
     var data =
-        mgGet("/series/" + id);
+        ppGet("/series/" + id);
 
     if (!data) {
         return mkDetail(
-            "mg_s_" + id,
+            "pp_s_" + id,
             "Sin resultado",
             "",
-            "magma://serie/" + id,
+            "pp://serie/" + id,
             [],
             ""
         );
@@ -1439,7 +1445,7 @@ function mgSerieDetails(id) {
             desc +=
                 "\n  Ep " +
                 epNum +
-                " → magma://serie/" +
+                " → pp://serie/" +
                 id +
                 "/" +
                 seasonNum +
@@ -1470,10 +1476,10 @@ function mgSerieDetails(id) {
     }
 
     return mkDetail(
-        "mg_s_" + id,
+        "pp_s_" + id,
         title,
         thumb,
-        "magma://serie/" + id,
+        "pp://serie/" + id,
         sources,
         desc
     );
@@ -1483,7 +1489,7 @@ function mgSerieDetails(id) {
 // EPISODIO
 // =========================================================
 
-function mgEpisodeLinks(
+function ppEpisodeLinks(
     id,
     season,
     episode
@@ -1491,11 +1497,11 @@ function mgEpisodeLinks(
     _debugLog = "";
 
     var data =
-        mgGet("/series/" + id);
+        ppGet("/series/" + id);
 
     if (!data) {
         return mkDetail(
-            "mg_se_" + id,
+            "pp_se_" + id,
             "Sin resultado",
             "",
             "",
@@ -1534,7 +1540,7 @@ function mgEpisodeLinks(
 
     if (epNum > 1) {
         desc +=
-            "\n\n← Ep Anterior: magma://serie/" +
+            "\n\n← Ep Anterior: pp://serie/" +
             id +
             "/" +
             season +
@@ -1543,7 +1549,7 @@ function mgEpisodeLinks(
     }
 
     desc +=
-        "\n→ Ep Siguiente: magma://serie/" +
+        "\n→ Ep Siguiente: pp://serie/" +
         id +
         "/" +
         season +
@@ -1551,7 +1557,7 @@ function mgEpisodeLinks(
         (epNum + 1);
 
     return mkDetail(
-        "mg_se_" +
+        "pp_se_" +
         id +
         "_" +
         season +
@@ -1562,7 +1568,7 @@ function mgEpisodeLinks(
 
         thumb,
 
-        "magma://serie/" +
+        "pp://serie/" +
         id +
         "/" +
         season +
@@ -1927,7 +1933,7 @@ function doSearch(query) {
 
     try {
         var r =
-            mgSearch(query);
+            ppSearch(query);
 
         for (
             var i = 0;
@@ -1993,18 +1999,16 @@ function doDetails(url) {
 
     if (
         url.indexOf(
-            "magma://movie/"
+            "pp://movie/"
         ) === 0
     ) {
-        // FIX v43: era /pp:\/\/movie\/(\d+)/ -> nunca matcheaba contra
-        // "magma://movie/123" porque "magma" no contiene "pp".
         var mm =
             url.match(
-                /magma:\/\/movie\/(\d+)/
+                /pp:\/\/movie\/(\d+)/
             );
 
         if (mm) {
-            return mgMovieDetails(
+            return ppMovieDetails(
                 mm[1]
             );
         }
@@ -2012,31 +2016,29 @@ function doDetails(url) {
 
     if (
         url.indexOf(
-            "magma://serie/"
+            "pp://serie/"
         ) === 0
     ) {
-        // FIX v43: era /pp:\/\/serie\/(\d+)\/(\d+)\/(\d+)/ -> mismo bug.
         var se =
             url.match(
-                /magma:\/\/serie\/(\d+)\/(\d+)\/(\d+)/
+                /pp:\/\/serie\/(\d+)\/(\d+)\/(\d+)/
             );
 
         if (se) {
-            return mgEpisodeLinks(
+            return ppEpisodeLinks(
                 se[1],
                 se[2],
                 se[3]
             );
         }
 
-        // FIX v43: era /pp:\/\/serie\/(\d+)/ -> mismo bug.
         var ss =
             url.match(
-                /magma:\/\/serie\/(\d+)/
+                /pp:\/\/serie\/(\d+)/
             );
 
         if (ss) {
-            return mgSerieDetails(
+            return ppSerieDetails(
                 ss[1]
             );
         }
@@ -2061,7 +2063,7 @@ function doHome() {
 
     try {
         var r =
-            mgHome();
+            ppHome();
 
         for (
             var i = 0;
@@ -2159,10 +2161,9 @@ function doRecommendations(url) {
     var videos = [];
 
     try {
-        // FIX v43: mismo bug de "pp://" -> "magma://" aquí también.
         var se =
             String(url || "").match(
-                /magma:\/\/serie\/(\d+)$/
+                /pp:\/\/serie\/(\d+)$/
             );
 
         if (!se) {
@@ -2172,7 +2173,7 @@ function doRecommendations(url) {
         var id = se[1];
 
         var data =
-            mgGet("/series/" + id);
+            ppGet("/series/" + id);
 
         if (!data) {
             return videos;
@@ -2230,7 +2231,7 @@ function doRecommendations(url) {
 
                 videos.push(
                     mkVideo(
-                        "mg_se_" +
+                        "pp_se_" +
                         id +
                         "_" +
                         seasonNum +
@@ -2245,14 +2246,14 @@ function doRecommendations(url) {
 
                         thumb,
 
-                        "magma://serie/" +
+                        "pp://serie/" +
                         id +
                         "/" +
                         seasonNum +
                         "/" +
                         epNum,
 
-                        "Magma"
+                        "PlayPelis"
                     )
                 );
             }
@@ -2320,7 +2321,7 @@ if (
                     ) !== -1 ||
 
                     url.indexOf(
-                        "magma://"
+                        "pp://"
                     ) !== -1
                 )
             );
@@ -2404,7 +2405,7 @@ if (
             } catch (e) {
                 return new PlatformVideoDetails({
                     id: new PlatformID(
-                        "Magma",
+                        "PlayPelis",
                         "error_fallo",
                         PID
                     ),
@@ -2423,9 +2424,9 @@ if (
 
                     author:
                         new PlatformAuthorLink(
-                            MGID,
-                            "Magma",
-                            "https://magma.app",
+                            PPID,
+                            "PlayPelis",
+                            "https://playpelis.app",
                             "",
                             0
                         ),
@@ -2433,7 +2434,7 @@ if (
                     uploadDate: 0,
                     url:
                         url ||
-                        "https://magma.app",
+                        "https://playpelis.app",
                     duration: 0,
                     viewCount: 0,
                     isLive: false,
