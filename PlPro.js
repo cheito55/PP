@@ -1,5 +1,14 @@
-// Magma GrayJay Source v46
+// Magma GrayJay Source v47
 // Multi-servidor + HLS + diagnóstico
+// Cambios v47:
+//  - DEBUG: mgHome()/mgSearch() tragaban cualquier fallo de mgGet() en un
+//    catch(e){} silencioso, así que nunca se sabía POR QUÉ el catálogo
+//    quedaba vacío. Ahora mgGet() deja un log persistente (_diag) con la
+//    URL exacta, el status HTTP y los primeros 200 caracteres de la
+//    respuesta (o la excepción, si la hay) en cada llamada. Si mgHome()
+//    no encuentra películas, en vez de devolver la lista vacía en
+//    silencio, agrega un ítem "⚠️ DEBUG Magma" que al abrirlo muestra
+//    todo ese log. Esto es temporal, solo para diagnosticar.
 // Cambios v46:
 //  - REVERTIDO el cambio de v45: IPTV_URL vuelve a "https://tv.m3uts.xyz".
 //    Comparando este script contra el de PlPro (que sí trae el catálogo
@@ -38,6 +47,12 @@ var UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
 var MGID = new PlatformID("Magma", "Magma", PID);
 var _settings = {};
 var _debugLog = "";
+
+// DEBUG v47: log persistente (no se resetea entre llamadas, a diferencia de
+// _debugLog) para poder ver qué pasó en mgGet() incluso cuando la falla
+// ocurre en mgHome()/mgSearch() (que hasta ahora tragaban el error en un
+// catch(e){} silencioso).
+var _diag = "";
 
 var IPTV_URL = "https://tv.m3uts.xyz";
 var IPTV_USER = "m";
@@ -919,13 +934,15 @@ function mkDetail(
 // =========================================================
 
 function mgGet(path) {
+    var url = "";
+
     try {
         var sep =
             path.indexOf("?") !== -1
                 ? "&"
                 : "?";
 
-        var url =
+        url =
             IPTV_URL +
             path +
             sep +
@@ -942,18 +959,38 @@ function mgGet(path) {
                 }
             );
 
-        if (
-            !response ||
-            !response.body
-        ) {
+        // DEBUG v47: dejamos constancia de cada llamada, exitosa o no.
+        if (!response) {
+            _diag +=
+                "[mgGet] " + url +
+                " -> http.GET devolvió null/undefined\n";
             return null;
         }
+
+        if (!response.body) {
+            _diag +=
+                "[mgGet] " + url +
+                " -> status=" + String(response.status) +
+                " sin body\n";
+            return null;
+        }
+
+        _diag +=
+            "[mgGet] " + url +
+            " -> status=" + String(response.status) +
+            " bodyLen=" + response.body.length +
+            " primeros200=" +
+            response.body.substring(0, 200).replace(/\s+/g, " ") +
+            "\n";
 
         return JSON.parse(
             response.body
         );
 
     } catch (e) {
+        _diag +=
+            "[mgGet] " + url +
+            " -> EXCEPTION: " + String(e) + "\n";
         return null;
     }
 }
@@ -969,6 +1006,18 @@ function mgHome() {
             !data ||
             !data.movies
         ) {
+            // DEBUG v47: en vez de devolver vacío en silencio, dejamos un
+            // ítem tocable con el diagnóstico completo de qué pasó.
+            videos.push(
+                mkVideo(
+                    "mg_debug",
+                    "⚠️ DEBUG Magma: catálogo vacío (tocá para ver detalle)",
+                    "",
+                    "magma://debug",
+                    "Magma"
+                )
+            );
+
             return videos;
         }
 
@@ -2002,6 +2051,19 @@ function doDetails(url) {
             "",
             [],
             "URL vacía"
+        );
+    }
+
+    // DEBUG v47: ítem especial para leer _diag completo desde la app.
+    if (url === "magma://debug") {
+        return mkDetail(
+            "mg_debug",
+            "Diagnóstico Magma",
+            "",
+            url,
+            [],
+            "=== DIAGNÓSTICO mgGet ===\n" +
+            (_diag || "(sin llamadas registradas)")
         );
     }
 
