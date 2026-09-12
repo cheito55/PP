@@ -1,6 +1,18 @@
-// Magma GrayJay Source v45
+// Magma GrayJay Source v46
 // Multi-servidor + HLS + diagnóstico
-// Cambios v45:
+// Cambios v46:
+//  - REVERTIDO el cambio de v45: IPTV_URL vuelve a "https://tv.m3uts.xyz".
+//    Comparando este script contra el de PlPro (que sí trae el catálogo
+//    completo apuntando a este mismo backend por HTTPS), la única diferencia
+//    funcional real que quedaba entre ambos era el protocolo. Como PlPro
+//    funciona con https://, la captura de red (que mostraba solo HTTP puerto 80
+//    en la app original) no era determinante: un server puede aceptar ambos
+//    protocolos aunque la app oficial solo use uno. El bug real de "solo
+//    aparece anime / video no disponible" sigue sin resolverse; sigue pendiente
+//    revisar si el problema está en otro lado (caché del script en GrayJay,
+//    versión del config sin incrementar, o algo en mgGet()/mgHome()/mgSearch()
+//    aún no identificado).
+// Cambios v45 (retirado en v46):
 //  - FIX: IPTV_URL apuntaba a "https://tv.m3uts.xyz". Una captura de red de la
 //    app original (com.magmaplayer) muestra que esta SIEMPRE habla con
 //    tv.m3uts.xyz por HTTP plano en el puerto 80 (nunca HTTPS/TLS). Con https://
@@ -27,7 +39,7 @@ var MGID = new PlatformID("Magma", "Magma", PID);
 var _settings = {};
 var _debugLog = "";
 
-var IPTV_URL = "http://tv.m3uts.xyz";
+var IPTV_URL = "https://tv.m3uts.xyz";
 var IPTV_USER = "m";
 var IPTV_PASS = "m";
 var JK = "https://jkanime.net";
