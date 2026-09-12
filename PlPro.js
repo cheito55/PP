@@ -1,5 +1,15 @@
-// Magma GrayJay Source v47
+// Magma GrayJay Source v48
 // Multi-servidor + HLS + diagnóstico
+// Cambios v48:
+//  - Confirmado por fetch directo que https://cheito55.github.io/PP/PlPro.js
+//    y PlProConfig.json SÍ son el archivo real que sirve GrayJay (no hay
+//    problema de caché ni de URL — v47 ya estaba deployado tal cual).
+//  - FIX: el ítem "⚠️ DEBUG Magma" de v47 solo se agregaba en mgHome().
+//    mgSearch() seguía devolviendo silencio total si el catálogo fallaba,
+//    así que si estabas mirando resultados de búsqueda en vez del Home
+//    nunca veías el debug. Ahora mgSearch() también agrega el mismo ítem
+//    de diagnóstico cuando no encuentra nada ni en /movies/resume ni en
+//    /series para la query.
 // Cambios v47:
 //  - DEBUG: mgHome()/mgSearch() tragaban cualquier fallo de mgGet() en un
 //    catch(e){} silencioso, así que nunca se sabía POR QUÉ el catálogo
@@ -1159,6 +1169,22 @@ function mgSearch(query) {
                     );
                 }
             }
+        }
+
+        // DEBUG v48: mgHome() ya avisaba con un ítem visible cuando el
+        // catálogo venía vacío, pero mgSearch() seguía en silencio. Si no
+        // hubo NINGÚN resultado de Magma (ni por película ni por serie),
+        // agregamos el mismo ítem de diagnóstico acá.
+        if (videos.length === 0) {
+            videos.push(
+                mkVideo(
+                    "mg_debug",
+                    "⚠️ DEBUG Magma: búsqueda sin resultados (tocá para ver detalle)",
+                    "",
+                    "magma://debug",
+                    "Magma"
+                )
+            );
         }
 
     } catch (e) {}
