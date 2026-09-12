@@ -1,5 +1,14 @@
-// Magma GrayJay Source v48
+// Magma GrayJay Source v49
 // Multi-servidor + HLS + diagnóstico
+// Cambios v49:
+//  - FIX: el ítem "⚠️ DEBUG Magma" (v47/v48) no tenía ninguna fuente de
+//    video (VideoSourceDescriptor vacío). GrayJay intenta reproducir
+//    apenas se abre un ítem y, al no encontrar nada, muestra "video no
+//    disponible" — nunca se llegaba a ver la descripción con el
+//    diagnóstico. Ahora se le agrega un stream HLS de prueba público
+//    (test-streams.mux.dev) como fuente, así reproduce algo real y se
+//    puede leer el detalle/descripción con el log completo de _diag.
+//    Requiere agregar "test-streams.mux.dev" a allowUrls en el config.
 // Cambios v48:
 //  - Confirmado por fetch directo que https://cheito55.github.io/PP/PlPro.js
 //    y PlProConfig.json SÍ son el archivo real que sirve GrayJay (no hay
@@ -2080,14 +2089,24 @@ function doDetails(url) {
         );
     }
 
-    // DEBUG v47: ítem especial para leer _diag completo desde la app.
+    // DEBUG v49: ítem especial para leer _diag completo desde la app.
+    // v48 no tenía ninguna fuente de video, así que GrayJay mostraba
+    // "video no disponible" ANTES de que se pudiera leer la descripción
+    // con el diagnóstico. Ahora le metemos un stream HLS de prueba
+    // público (test-streams.mux.dev) para que sí reproduzca algo y se
+    // pueda ver el detalle/descripción con el log completo.
     if (url === "magma://debug") {
         return mkDetail(
             "mg_debug",
             "Diagnóstico Magma",
             "",
             url,
-            [],
+            [
+                mkHls(
+                    "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8",
+                    "TEST (ignorar, esto es solo para poder ver el diagnóstico)"
+                )
+            ],
             "=== DIAGNÓSTICO mgGet ===\n" +
             (_diag || "(sin llamadas registradas)")
         );
