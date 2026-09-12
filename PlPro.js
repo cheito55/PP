@@ -1,5 +1,18 @@
-// Magma GrayJay Source v51
+// Magma GrayJay Source v53
 // Multi-servidor + HLS + diagnóstico
+// Cambios v53:
+//  - PELÍCULAS: stream/gen (POST) se prueba PRIMERO (fuente oficial en
+//    ~1s cuando el servidor está sano); si falla, se usan los embeds.
+//  - EMBEDS: dedupe por URL + máx. 2 intentos por host + corte en 2
+//    fuentes -> el detalle deja de tardar 30-150s por mirrors caídos.
+// Cambios v52:
+//  - FIX: doDetails() ahora enruta magma://ep/{id}/{season}/{ep} a
+//    mgEpisodeDetails() -> los episodios navegables reproducen.
+//  - FIX: doRecommendations() lista TODOS los episodios de la serie
+//    actual (antes mostraba "series similares" inútiles).
+//  - RENDIMIENTO: home recortado a 9 sitios verdes (fuera PelisPlus,
+//    Serielatino, PelisCris, SeriesBib, HistCine, CineAntes que tardaban
+//    30-40s); search se mantiene en Cuevana3/PelisFlix/Kindor/VerUltra.
 // Cambios v51:
 //  - FIX: _siteParseGeneric calculaba mal la ventana de contexto (usaba
 //    anchors[i].indexOf("href") dentro del tag en vez de la posicion real en
@@ -64,7 +77,7 @@ var TMDB_IMG = "https://image.tmdb.org/t/p/w500";
 var MAGMA_X_APP = "ps";
 var MAGMA_X_VERSION = "10/1.0.9";
 var MAGMA_X_DID = "9f100e691008b1b8";
-var MAGMA_X_HASH = "fyu8cis5qQWtEjNeSpg3ZGGXc9IduYXAd7LIn-CJJLKU6z9Jar3SJ8LZ_kCbG9-FS8joRKc_OAsgj6gFVnqSLl4Zw4wFIwXUWuN33Xzx0NQ83Yp5DK64pu3fs74KeE4RzHLNmYtqkBXFBTC8edygMYMnCdBJsvEPmqN_PRpvQjsdl8gkHa9XyvQhumiDIRh2bowwvGxR";
+var MAGMA_X_HASH = "fyu8cis5qQWtEjNeSpg3ZGGXc9IduYXAd7LIn-CJJLKU6z9Jar3SJ8LZ_kCbG9-FS8joRKc_OAsgj6gFVnqSLl4Zw4wFIwXUWuN33Xzx0NQ83Yp5DK64pu3fs74KeE4RzHLNmYtqkBXFBTC8edygMYMnCdBJsvEPmqN_PRpvQjsdl8gkHa9XyvQhumiDIRh2bowwvGxRBPh9pRuFQOTGNI9U-lF-l0EEFF4T54zHSmsRi3ezUiWghDowckOGQzIjOCfx31GV32nH868v4zyfXfKKe_l0T7E6wSmMwCsYmC9UcJVqi00hH9uIgiw9llbPqFzq76sJwGpXN8pLKg8f1wsx6MXR0ymoSnoNotE52YmhyzYRIUAlIThlnP5gqFQ6SDUoWCp_rU3hOWWLp9JaZuQTu-_W1vEaMiz8yPZIXSiT3iVD6qgCISqUfJVIrHHzdpb1P6AZ94IyoxBvLVrZdj0IS0yfjcD2Nv5zye3CZqkuZVBjsoLTVWUy4YOnXNHMdIie_hK5tFEBVey2Gvz5FDu38EDszyVOz6WUA60TVeYS7aGR5_OVhWY8fJVJ3dI6kjufWeWwk6X4tB9yZoFy7Q";
 var MAGMA_PLAYER_UA = "Magma Player/10";
 var _sgHashValid = null;
 
@@ -1047,36 +1060,23 @@ var _MULTI_SITES = [
       split:'TPostMv', urlRe:/href="(\/pelicula\/[^"]+|\/serie\/[^"]+|https?:\/\/[^"]+\/(?:pelicula|serie)\/[^"]+)"/,
       titleRe:/<div class="Title">([^<]{2,140})<\/div>|<h2 class="Title">([^<]{2,140})<\/h2>|<img[^>]*alt=["']([^"']{2,100})["']/i,
       thumbRe:/data-src="([^"]+)"|src=([^ >]+)/, tStrip:/^["']/ },
-    { name:"PelisPlus", base:"https://pelisplusapk.net",
-      searchUrl:"https://pelisplusapk.net/?s={q}", homeUrl:"https://pelisplusapk.net/inicio/",
-      split:'TPostMv', urlRe:/href="(\/pelicula\/[^"]+|\/serie\/[^"]+|https?:\/\/[^"]+\/(?:pelicula|serie)\/[^"]+)"/,
-      titleRe:/<div class="Title">([^<]{2,140})<\/div>|<h2 class="Title">([^<]{2,140})<\/h2>|<img[^>]*alt=["']([^"']{2,100})["']/i,
-      thumbRe:/data-src="([^"]+)"|src=([^ >]+)/, tStrip:/^["']/ },
+    { name:"Kindor", base:"https://kindor.pro",
+      searchUrl:"https://kindor.pro/?s={q}", homeUrl:"https://kindor.pro/",
+      generic:true, navFilter:/^\/(?:peliculas?|series?|anime|estrenos|cine|genero)/ },
+    { name:"VerUltra", base:"https://verpeliculasultra.com",
+      searchUrl:"https://verpeliculasultra.com/?do=search&subaction=search&story={q}", homeUrl:"https://verpeliculasultra.com/",
+      generic:true, navFilter:/^\/(?:peliculas?|series?|estrenos?|cine|genero)/ },
     // -------- HOME-only: contenido único, distinto servidor --------
     { name:"FullTV", base:"https://www.fulltv.com.mx", homeUrl:"https://www.fulltv.com.mx/",
       split:'last-item', skipUrlRe:/lista-|indice/i, urlRe:/<h3><a href="([^"]+\.html)">/, titleRe:/<h3><a href="[^"]*">([^<]+)<\/a>/, thumbRe:/src="(\/\/[^"]+\.(?:jpg|jpeg|png))"/, tPrefix:"https:" },
     { name:"PelisPop", base:"https://pelispop.mov", homeUrl:"https://pelispop.mov/",
       generic:true, navFilter:/^\/(?:peliculas?|series?|anime|estrenos|cine|genero)/ },
-    { name:"Kindor", base:"https://kindor.pro", homeUrl:"https://kindor.pro/",
-      generic:true, navFilter:/^\/(?:peliculas?|series?|anime|estrenos|cine|genero)/ },
-    { name:"VerUltra", base:"https://verpeliculasultra.com", homeUrl:"https://verpeliculasultra.com/",
-      generic:true, navFilter:/^\/(?:peliculas?|series?|estrenos?|cine|genero)/ },
     { name:"PelisOnline", base:"https://pelisonline.club", homeUrl:"https://pelisonline.club/",
       generic:true, navFilter:/^\/(?:peliculas?|series?)/ },
-    { name:"Serielatino", base:"https://serielatino.com", homeUrl:"https://serielatino.com/serie/",
-      generic:true, navFilter:/^\/(?:peliculas?|series?|genero)/ },
     { name:"SeriesPeru", base:"https://seriesperu.com", homeUrl:"https://seriesperu.com/",
       generic:true, navFilter:/^\/(?:series|genero)/ },
     { name:"TVSeriesLat", base:"https://www.tvserieslatino.com", homeUrl:"https://www.tvserieslatino.com/",
       generic:true, navFilter:/^\/(?:peliculas?|series?|genero|category|tag|page)/ },
-    { name:"CineAntes", base:"https://cinedeantes2.weebly.com", homeUrl:"https://cinedeantes2.weebly.com/",
-      generic:true, navFilter:/^\/(?!.*-[-][a-z]\.html)/ },
-    { name:"PelisCris", base:"https://peliculascristianas.es", homeUrl:"https://peliculascristianas.es/",
-      generic:true, navFilter:/^\/(?:peliculas?|series?|genero)/ },
-    { name:"SeriesBib", base:"https://seriesbiblicas.net", homeUrl:"https://seriesbiblicas.net/",
-      generic:true, navFilter:/^\/(?:series|genero|tag|page)/ },
-    { name:"HistCine", base:"https://online.historiadelcine.es", homeUrl:"https://online.historiadelcine.es/",
-      generic:true, navFilter:/^\/(?:peliculas|categor)/ },
 ];
 
 var _NAV_SLUG_RE = /^(peliculas?|series?|anime|estrenos?|genero[s]?|categor[ií]as?|en-cartelera|proximamente|populares|tendencias|top|novedades|lista[s]?|todas|descargas?|releases?|movies?|pago|membresia|contacto|nosotros|login|registro|cuenta|politica|terminos|aviso|publicidad|\d{4}|\d{4}-\d{4}|\d{4}-\d{2})$/i;
@@ -1946,6 +1946,32 @@ function mgMovieDetails(id) {
 
     desc += "\n\n--- Servidores ---";
 
+    var seenUrls = {};
+    var seenHosts = {};
+
+    function pushSource(s) {
+        if (!s) return false;
+        var su = String(s.url || "");
+        if (!su || seenUrls[su]) return false;
+        seenUrls[su] = 1;
+        sources.push(s);
+        return true;
+    }
+
+    // 1) stream/gen (POST): el canal oficial del servidor. Cuando el
+    // servidor está sano resuelve en ~1s una m3u8 firmada que NO depende
+    // de los embeds externos (que pueden estar caídos). Si falla (500),
+    // seguimos con los embeds.
+    var sgUrl = resolveStreamGen(id);
+    if (sgUrl) {
+        var sgHls = mkMagmaHls(sgUrl, "stream/gen (interna)");
+        if (pushSource(sgHls)) {
+            desc += "\nstream/gen [interna]";
+            addDebug("[movie] stream/gen OK: " + sgUrl);
+        }
+    }
+
+    // 2) Embeds externos: hasta 2 servidores extra (hosts distintos).
     var linksData =
         xtGet("get_vod_links", { vod_id: id });
 
@@ -1958,7 +1984,7 @@ function mgMovieDetails(id) {
 
         for (
             var i = 0;
-            i < linksData.length && tried < MAX_TRY;
+            i < linksData.length && tried < MAX_TRY && sources.length < 3;
             i++
         ) {
             var link = linksData[i];
@@ -1969,10 +1995,19 @@ function mgMovieDetails(id) {
                 continue;
             }
 
+            var host = getHost(linkUrl);
+
+            // Máximo 2 intentos por host: si un servidor está caído, no
+            // gastar 20s+ en probar sus mirrors.
+            if ((seenHosts[host] || 0) >= 2) {
+                continue;
+            }
+
+            seenHosts[host] = (seenHosts[host] || 0) + 1;
             tried++;
 
             var serverName =
-                getHost(linkUrl) +
+                host +
                 " [" +
                 (link.language || "") +
                 "/" +
@@ -1998,8 +2033,7 @@ function mgMovieDetails(id) {
                         serverName
                     );
 
-                if (h) {
-                    sources.push(h);
+                if (pushSource(h)) {
                     desc += "\n" + serverName;
                 }
 
@@ -2016,36 +2050,16 @@ function mgMovieDetails(id) {
         }
     }
 
-    // stream/gen como ÚLTIMO recurso (requiere X-Hash válido).
     if (sources.length === 0) {
-        if (testStreamGenHash(id)) {
-            var sgUrl = resolveStreamGen(id);
-            if (sgUrl) {
-                var sgHls = mkMagmaHls(sgUrl, "stream/gen (interna)");
-                if (sgHls) {
-                    sources.push(sgHls);
-                    desc += "\nstream/gen [interna]";
-                    addDebug("[movie] stream/gen OK: " + sgUrl);
-                }
-            }
-        } else {
-            addDebug("[movie] stream/gen saltado: X-Hash no válida en este dispositivo");
+        var cands =
+            xtGetPlayCandidates("vod", id);
+
+        for (var c = 0; c < cands.length; c++) {
+            xtAddSource(sources, cands[c]);
         }
-    }
 
-    if (sources.length === 0) {
-        if (testStreamGenHash(id)) {
-            var cands =
-                xtGetPlayCandidates("vod", id);
-
-            for (var c = 0; c < cands.length; c++) {
-                xtAddSource(sources, cands[c]);
-            }
-        } else {
+        if (sources.length === 0) {
             desc += "\n\n⚠️ No hay servidores reproducibles desde GrayJay.";
-            desc += "\nEl servidor solo entrega stream/gen cifrado con X-Hash,";
-            desc += "\nque no es compatible con el player de GrayJay sin un";
-            desc += "\nX-Hash propio del dispositivo (ver Reporte Técnico).";
         }
     }
 
@@ -2076,20 +2090,19 @@ function mgLiveDetails(id) {
 
     var sources = [];
 
-    // stream/gen con executor que inyecta X-App/X-Version/X-Hash/X-Did.
-    // Sin un X-Hash válido para este dispositivo, el m3u8 devuelve 404.
-    if (testStreamGenHash(id)) {
-        var sgLive = resolveStreamGen(id);
-        if (sgLive) {
-            var sgH = mkMagmaHls(sgLive, "Live stream/gen (firmada)");
-            if (sgH) {
-                sources.push(sgH);
-                desc += "\nFuente: stream/gen (firmada)";
-                addDebug("[live] stream/gen OK: " + sgLive);
-            }
+    // stream/gen (POST) no requiere X-Hash para RESOLVER la URL segura;
+    // el m3u8 seguro requiere los headers X-App/X-Version/X-Hash/X-Did
+    // que inyecta MagmaHlsExecutor en cada request HLS.
+    var sgLive = resolveStreamGen(id);
+    if (sgLive) {
+        var sgH = mkMagmaHls(sgLive, "Live stream/gen (firmada)");
+        if (sgH) {
+            sources.push(sgH);
+            desc += "\nFuente: stream/gen (firmada)";
+            addDebug("[live] stream/gen OK: " + sgLive);
         }
     } else {
-        addDebug("[live] stream/gen saltado: X-Hash no válida en este dispositivo");
+        addDebug("[live] stream/gen sin respuesta para canal " + id);
     }
 
     var direct =
@@ -2113,17 +2126,16 @@ function mgLiveDetails(id) {
     }
 
     if (sources.length === 0) {
-        if (testStreamGenHash(id)) {
-            var cands =
-                xtGetPlayCandidates("live", id);
+        var cands =
+            xtGetPlayCandidates("live", id);
 
-            for (var i = 0; i < cands.length; i++) {
-                xtAddSource(sources, cands[i]);
-            }
-        } else {
+        for (var i = 0; i < cands.length; i++) {
+            xtAddSource(sources, cands[i]);
+        }
+
+        if (sources.length === 0) {
             desc += "\n\n⚠️ Canal sin fuente reproducible desde GrayJay.";
-            desc += "\nstream/gen cifrado requiere X-Hash válido del";
-            desc += "\ndispositivo (ver Reporte Técnico).";
+            desc += "\nstream/gen no respondió y no hay fuente directa.";
         }
     }
 
@@ -2135,6 +2147,105 @@ function mgLiveDetails(id) {
         sources,
         desc
     );
+}
+
+// Obtiene los embeds de un episodio concreto vía get_episode_links
+// (endpoint REAL de la app: player_api.php?action=get_episode_links
+// &serie={serie}&season={season}&episode={episode})
+function mgEpisodeSources(serieId, season, episode) {
+    var links =
+        xtGet("get_episode_links", {
+            serie: serieId,
+            season: season,
+            episode: episode
+        });
+
+    if (!links || !links.length) {
+        return [];
+    }
+
+    var src = links.slice(0);
+
+    src.sort(function(a, b) {
+        return embedPriority(a.url || "") - embedPriority(b.url || "");
+    });
+
+    var out = [];
+    var seen = {};
+    var seenHosts = {};
+
+    for (var i = 0; i < src.length && out.length < 2; i++) {
+        var linkUrl = src[i].url || "";
+        if (!linkUrl) continue;
+        var host = getHost(linkUrl);
+        if ((seenHosts[host] || 0) >= 2) continue;
+        seenHosts[host] = (seenHosts[host] || 0) + 1;
+        var ex = extractVideo(linkUrl);
+        if (!ex || seen[ex]) continue;
+        seen[ex] = 1;
+        var h = mkHls(
+            ex,
+            host +
+                " [" +
+                (src[i].language || "") +
+                "/" +
+                (src[i].quality || "") +
+                "]"
+        );
+        if (h) out.push(h);
+    }
+
+    return out;
+}
+
+// Devuelve { temporada: [ { episode_num, title, id } ] } de get_series_info
+function mgSerieEpisodes(serieId) {
+    var info =
+        xtGet("get_series_info", { series_id: serieId });
+
+    if (!info || !info.episodes) {
+        return null;
+    }
+
+    var out = {};
+    var keys = Object.keys(info.episodes);
+
+    for (var k = 0; k < keys.length; k++) {
+        var sn = keys[k];
+        var arr = info.episodes[sn] || [];
+        var clean = [];
+        for (var e = 0; e < arr.length; e++) {
+            var ep = arr[e];
+            clean.push({
+                id: ep.id,
+                episode_num: ep.episode_num,
+                title: ep.title || "Episodio " + (ep.episode_num || "")
+            });
+        }
+        out[sn] = clean;
+    }
+
+    return out;
+}
+
+function mgSerieFirstEpisode(eps) {
+    if (!eps) return null;
+    var seasons = Object.keys(eps).sort(function(a, b) {
+        return parseInt(a, 10) - parseInt(b, 10);
+    });
+    for (var i = 0; i < seasons.length; i++) {
+        var arr = eps[seasons[i]] || [];
+        if (arr.length) {
+            arr.sort(function(a, b) {
+                return (a.episode_num || 0) - (b.episode_num || 0);
+            });
+            return {
+                season: seasons[i],
+                episode: arr[0]
+            };
+        }
+    }
+    return null;
 }
 
 function mgSerieDetails(id) {
@@ -2175,20 +2286,76 @@ function mgSerieDetails(id) {
     }
 
     desc += "\n\nServidor: " + IPTV_URL;
-    desc += "\n\n⚠️ El servidor no expone listado de episodios (" + IPTV_URL + " no responde get_series_links).";
+
+    var sources = [];
+
+    var eps = mgSerieEpisodes(id);
+    var first = eps ? mgSerieFirstEpisode(eps) : null;
+
+    if (first) {
+        desc +=
+            "\n\n🎬 Primer episodio: " +
+            first.episode.title +
+            " (S" +
+            first.season +
+            "E" +
+            first.episode.episode_num +
+            ")";
+
+        sources = mgEpisodeSources(id, first.season, first.episode.episode_num);
+
+        if (sources.length) {
+            desc += "\n✅ Reproduciendo S" + first.season + "E" + first.episode.episode_num;
+        }
+    } else {
+        desc += "\n\n⚠️ La serie no expone episodios en el servidor.";
+    }
+
+    if (eps) {
+        var total = 0;
+        var snames = Object.keys(eps);
+        for (var i = 0; i < snames.length; i++) total += eps[snames[i]].length;
+        desc += "\n\n📺 " + snames.length + " temporada(s), " + total + " episodio(s).";
+    }
 
     return mkDetail(
         "mg_s_" + id,
         title,
         thumb,
         url,
-        [],
+        sources,
+        desc
+    );
+}
+
+function mgEpisodeDetails(serieId, season, episode) {
+    var item = xtFind(xtLists().series, serieId);
+    var title = "Episodio " + season + "x" + episode;
+    var eps = mgSerieEpisodes(serieId);
+    if (eps && eps[String(season)]) {
+        var arr = eps[String(season)];
+        for (var i = 0; i < arr.length; i++) {
+            if (String(arr[i].episode_num) === String(episode)) {
+                title = arr[i].title;
+                break;
+            }
+        }
+    }
+    var full = (item ? (item.name || "") : "Serie " + serieId) + " - " + title;
+    var sources = mgEpisodeSources(serieId, season, episode);
+    var desc = full + "\n\nServidor: " + IPTV_URL;
+    return mkDetail(
+        "mg_ep_" + serieId + "_" + season + "_" + episode,
+        full,
+        item ? xtThumb(item) : "",
+        "magma://ep/" + serieId + "/" + season + "/" + episode,
+        sources,
         desc
     );
 }
 
 function mgEpisodeLinks(id, season, episode) {
-    return mgSerieDetails(id);
+    return mgEpisodeDetails(id, season, episode);
 }
 
 // =========================================================
@@ -2304,6 +2471,25 @@ function doDetails(url) {
         }
     }
 
+    if (
+        url.indexOf(
+            "magma://ep/"
+        ) === 0
+    ) {
+        var epm =
+            url.match(
+                /magma:\/\/ep\/(\d+)\/(\d+)\/(\d+)/
+            );
+
+        if (epm) {
+            return mgEpisodeDetails(
+                epm[1],
+                epm[2],
+                epm[3]
+            );
+        }
+    }
+
     return mkDetail(
         "",
         "",
@@ -2371,42 +2557,67 @@ function doRecommendations(url) {
     var videos = [];
 
     try {
-        var se =
+        var m =
             String(url || "").match(
-                /magma:\/\/serie\/(\d+)$/
+                /magma:\/\/(?:serie|ep)\/(\d+)/
             );
 
-        if (!se) {
+        if (!m) {
             return videos;
         }
 
-        var id = se[1];
+        var id = parseInt(m[1], 10);
 
-        var L = xtLists();
+        var eps = mgSerieEpisodes(id);
+
+        if (!eps) {
+            return videos;
+        }
+
+        var seasons =
+            Object.keys(eps).sort(function(a, b) {
+                return parseInt(a, 10) - parseInt(b, 10);
+            });
 
         for (
             var i = 0;
-            i < L.series.length && videos.length < 12;
+            i < seasons.length;
             i++
         ) {
-            var s = L.series[i];
+            var arr = eps[seasons[i]] || [];
 
-            if (
-                String(s.series_id) ===
-                String(id)
+            for (
+                var j = 0;
+                j < arr.length;
+                j++
             ) {
-                continue;
-            }
+                var ep = arr[j];
 
-            videos.push(
-                mkVideo(
-                    "mg_s_" + s.series_id,
-                    "[Serie] " + (s.name || ""),
-                    xtThumb(s),
-                    "magma://serie/" + s.series_id,
-                    "Magma"
-                )
-            );
+                videos.push(
+                    mkVideo(
+                        "mg_ep_" +
+                            id +
+                            "_" +
+                            seasons[i] +
+                            "_" +
+                            ep.episode_num,
+                        "[S" +
+                            seasons[i] +
+                            "E" +
+                            ep.episode_num +
+                            "] " +
+                            (ep.title || "Episodio"),
+                        "",
+                        "magma://ep/" +
+                            id +
+                            "/" +
+                            seasons[i] +
+                            "/" +
+                            ep.episode_num,
+                        "Magma"
+                    )
+                );
+            }
         }
 
     } catch (e) {}
