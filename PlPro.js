@@ -1,4 +1,4 @@
-// Magma GrayJay Source v48
+// Magma GrayJay Source v49
 // Multi-servidor + HLS + diagnóstico
 // Cambios v45:
 //  - FIX: IPTV_URL apuntaba a "https://tv.m3uts.xyz". Una captura de red de la
@@ -67,6 +67,23 @@ function httpGet(url, headers) {
         return (r && r.body) ? r.body : "";
     } catch (e) {
         addDebug("HTTP Exception en " + url + ": " + String(e));
+        return "";
+    }
+}
+
+function httpPost(url, bodyStr, headers) {
+    try {
+        var h = headers || {};
+        if (!h["User-Agent"] && !h["user-agent"]) {
+            h["User-Agent"] = DALVIK_UA;
+        }
+        if (!h["Content-Type"]) {
+            h["Content-Type"] = "application/x-www-form-urlencoded";
+        }
+        var r = http.post(url, bodyStr, h);
+        return (r && r.body) ? r.body : "";
+    } catch (e) {
+        addDebug("HTTP POST Exception en " + url + ": " + String(e));
         return "";
     }
 }
@@ -1134,6 +1151,24 @@ function xtFind(list, id) {
     return null;
 }
 
+
+function resolveStreamGen(id) {
+    try {
+        var body = "id=" + encodeURIComponent(id) + "&cast=false&device=9f100e691008b1b8&code=";
+        var resp = httpPost(IPTV_URL + "/stream/gen/" + id, body);
+        if (!resp) return null;
+        resp = resp.trim();
+        if (/^https?:\/\/.*\.m3u8/i.test(resp)) {
+            addDebug("[streamGen] URL resuelta: " + resp);
+            return resp;
+        }
+        addDebug("[streamGen] respuesta no es m3u8: " + resp.substring(0, 100));
+        return null;
+    } catch (e) {
+        addDebug("[streamGen] error: " + String(e));
+        return null;
+    }
+}
 function xtLiveUrl(id) {
     return (
         IPTV_URL +
@@ -1152,11 +1187,21 @@ function xtGetPlayCandidates(kind, id) {
     var p = encodeURIComponent(IPTV_PASS);
     var out = [];
 
-    out.push({
-        url: IPTV_URL + "/stream/gen/" + id,
-        name: "stream/gen",
-        hls: true
-    });
+    var sg = resolveStreamGen(id);
+
+    if (sg) {
+        out.push({
+            url: sg,
+            name: "stream/gen (firmada)",
+            hls: true
+        });
+    } else {
+        out.push({
+            url: IPTV_URL + "/stream/gen/" + id,
+            name: "stream/gen",
+            hls: true
+        });
+    }
 
     if (kind === "live") {
         out.push({
@@ -1402,11 +1447,24 @@ function mgMovieDetails(id) {
 
     var sources = [];
 
+    var sgUrl = resolveStreamGen(id);
+    if (sgUrl) {
+        var sgHls = mkHls(sgUrl, "stream/gen");
+        if (sgHls) {
+            sources.push(sgHls);
+            desc += "\n\n--- Servidores ---";
+            desc += "\nstream/gen [servidor interno]";
+            addDebug("[movie] stream/gen OK: " + sgUrl);
+        }
+    }
+
     var linksData =
         xtGet("get_vod_links", { vod_id: id });
 
     if (linksData && linksData.length) {
-        desc += "\n\n--- Servidores ---";
+        if (!sgUrl) {
+            desc += "\n\n--- Servidores ---";
+        }
 
         var tried = 0;
 
@@ -1506,6 +1564,16 @@ function mgLiveDetails(id) {
     desc += "\n\nServidor: " + IPTV_URL;
 
     var sources = [];
+
+    var sgLive = resolveStreamGen(id);
+    if (sgLive) {
+        var sgH = mkHls(sgLive, "Live stream/gen");
+        if (sgH) {
+            sources.push(sgH);
+            desc += "\nFuente: stream/gen (firmada)";
+            addDebug("[live] stream/gen OK: " + sgLive);
+        }
+    }
 
     var direct =
         (item &&
