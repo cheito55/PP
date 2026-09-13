@@ -1,5 +1,18 @@
-// Magma GrayJay Source v54
+// Magma GrayJay Source v55
 // Multi-servidor + HLS + diagnóstico
+// Cambios v55:
+//  - FIX CRÍTICO (probable causa raíz de "video no disponible" total):
+//    resolveStreamGen() pedía la URL firmada por POST sin mandar los
+//    headers de Magma (X-App/X-Version/X-Hash/X-Did); esos headers solo
+//    se usaban después para pedir el HLS en sí. Si el backend exige esos
+//    headers para autorizar el propio stream/gen, la petición fallaba
+//    siempre y no había ninguna fuente "interna" real.
+//  - FIX: resolveStreamGen() ahora también busca el m3u8 embebido en la
+//    respuesta (antes exigía que la respuesta empezara EXACTAMENTE con
+//    "http...m3u8"; cualquier JSON/texto envolviendo la URL se descartaba).
+//  - FIX: mkMagmaHls() ya no cae a mkHls() sin el executor cuando falla
+//    (eso entregaba una fuente sin headers, que siempre es rechazada);
+//    ahora devuelve null para que se pruebe el siguiente candidato.
 // Cambios v54:
 //  - FIX CRÍTICO: mgMovieDetails()/mgEpisodeSources() envolvían CUALQUIER
 //    link resuelto (incluidos archivos directos .mp4/.mkv de CDNs como
@@ -195,8 +208,12 @@ function mkMagmaHls(url, name, duration) {
         src.getRequestExecutor = function() { return executor; };
         return src;
     } catch(e) {
-        addDebug("[mkMagmaHls] Exception: " + String(e));
-        return mkHls(url, name, duration);
+        // FIX v55: antes caía a mkHls() sin el executor, es decir sin los
+        // headers X-Hash -> entregaba una fuente que GrayJay pide sin
+        // autorización y siempre falla. Mejor no entregar nada y que se
+        // pruebe el siguiente candidato (embed/Xtream).
+        addDebug("[mkMagmaHls] Exception, se descarta la fuente: " + String(e));
+        return null;
     }
 }
 
@@ -1698,15 +1715,53 @@ function xtFind(list, id) {
 
 function resolveStreamGen(id) {
     try {
-        var body = "id=" + encodeURIComponent(id) + "&cast=false&device=9f100e691008b1b8&code=";
-        var resp = httpPost(IPTV_URL + "/stream/gen/" + id, body);
-        if (!resp) return null;
-        resp = resp.trim();
-        if (/^https?:\/\/.*\.m3u8/i.test(resp)) {
-            addDebug("[streamGen] URL resuelta: " + resp);
-            return resp;
+        if (!id) {
+            addDebug("[streamGen] ID vacío");
+            return null;
         }
-        addDebug("[streamGen] respuesta no es m3u8: " + resp.substring(0, 100));
+
+        var body = "id=" + encodeURIComponent(id) + "&cast=false&device=" + MAGMA_X_DID + "&code=";
+
+        // FIX v55: el POST no mandaba los headers de Magma (X-App/X-Version/
+        // X-Hash/X-Did), solo se usaban después para el HLS. Si el backend
+        // exige esos headers para autorizar el stream/gen, la petición fallaba
+        // sin error visible y resolveStreamGen devolvía null siempre -> nunca
+        // había fuente "interna" ni candidato Magma real -> "video no disponible".
+        var headers = {
+            "User-Agent": MAGMA_PLAYER_UA,
+            "X-App": MAGMA_X_APP,
+            "X-Version": MAGMA_X_VERSION,
+            "X-Hash": MAGMA_X_HASH,
+            "X-Did": MAGMA_X_DID,
+            "Accept": "*/*",
+            "Referer": IPTV_URL + "/"
+        };
+
+        var resp = httpPost(IPTV_URL + "/stream/gen/" + id, body, headers);
+        if (!resp) {
+            addDebug("[streamGen] respuesta vacía");
+            return null;
+        }
+        resp = resp.trim();
+        addDebug("[streamGen] respuesta=" + resp.substring(0, 200));
+
+        // 1. Respuesta directa: https://...m3u8
+        if (/^https?:\/\/.*\.m3u8/i.test(resp)) {
+            addDebug("[streamGen] URL resuelta (directa): " + resp);
+            return cleanUrl(resp);
+        }
+
+        // FIX v55: antes se descartaba cualquier respuesta que no empezara
+        // exactamente con "http...m3u8" (ej. JSON envolviendo la URL, o
+        // texto con basura alrededor). Ahora se busca el m3u8 dentro del
+        // cuerpo completo antes de rendirse.
+        var m = resp.match(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/i);
+        if (m && m[0]) {
+            addDebug("[streamGen] URL resuelta (embebida): " + m[0]);
+            return cleanUrl(m[0]);
+        }
+
+        addDebug("[streamGen] respuesta no contiene m3u8: " + resp.substring(0, 100));
         return null;
     } catch (e) {
         addDebug("[streamGen] error: " + String(e));
