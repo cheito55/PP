@@ -1,5 +1,17 @@
-// Magma GrayJay Source v55
+// Magma GrayJay Source v56
 // Multi-servidor + HLS + diagnóstico
+// Cambios v56 (aplicado tal cual el diagnóstico pegado por el usuario):
+//  - httpPost() ahora loguea status/len de cada respuesta (antes solo
+//    logueaba excepciones, no había forma de ver un 403/500 silencioso).
+//  - resolveStreamGen() suma un tercer intento de parseo: si la respuesta
+//    es JSON con la URL en un campo anidado (url/stream/m3u8/hls/etc.)
+//    en vez de texto plano con el m3u8 embebido.
+//  - MagmaHlsExecutor ahora conserva los headers que GrayJay agregue a
+//    cada request (ej. Range para seek) antes de sobreescribir con los
+//    obligatorios de Magma, en vez de descartarlos.
+//  - xtAddSource() y mgMovieDetails() loguean el detalle completo de cada
+//    fallo/paso (antes algunos catch no incluían el mensaje de la
+//    excepción, o el "else" de stream/gen no dejaba rastro).
 // Cambios v55:
 //  - FIX CRÍTICO (probable causa raíz de "video no disponible" total):
 //    resolveStreamGen() pedía la URL firmada por POST sin mandar los
@@ -158,9 +170,14 @@ function httpPost(url, bodyStr, headers) {
             h["Content-Type"] = "application/x-www-form-urlencoded";
         }
         var r = http.post(url, bodyStr, h);
-        return (r && r.body) ? r.body : "";
+        if (!r) {
+            addDebug("[POST] respuesta null: " + url);
+            return "";
+        }
+        addDebug("[POST] " + url + " status=" + (r.code !== undefined ? r.code : "?") + " len=" + (r.body ? r.body.length : 0));
+        return r.body || "";
     } catch (e) {
-        addDebug("HTTP POST Exception en " + url + ": " + String(e));
+        addDebug("[POST] Exception " + url + ": " + String(e));
         return "";
     }
 }
@@ -177,6 +194,16 @@ class MagmaHlsExecutor {
     executeRequest(url, headers) {
         try {
             var h = {};
+            // FIX v56 (diagnóstico): conservar headers que GrayJay haya
+            // agregado a la petición (ej. Range para seek) antes de
+            // sobrescribir con los obligatorios de Magma.
+            if (headers) {
+                for (var k in headers) {
+                    if (headers.hasOwnProperty(k) && headers[k] !== undefined && headers[k] !== null) {
+                        h[k] = headers[k];
+                    }
+                }
+            }
             h["X-App"] = MAGMA_X_APP;
             h["X-Version"] = MAGMA_X_VERSION;
             h["X-Hash"] = MAGMA_X_HASH;
@@ -184,9 +211,13 @@ class MagmaHlsExecutor {
             h["User-Agent"] = MAGMA_PLAYER_UA;
             h["Accept-Encoding"] = "identity";
             var resp = http.GET(url, h, false);
-            if (!resp || !resp.isOk) {
-                addDebug("[MagmaExecutor] FAIL status=" + (resp ? resp.code : "null") + " url=" + url.substring(0, 120));
-                throw new ScriptException("Magma fetch failed: " + (resp ? resp.code : "null"));
+            if (!resp) {
+                addDebug("[MagmaExecutor] respuesta null url=" + url.substring(0, 120));
+                throw new ScriptException("Magma HTTP null");
+            }
+            addDebug("[MagmaExecutor] " + resp.code + " " + String(url).substring(0, 180));
+            if (!resp.isOk) {
+                throw new ScriptException("Magma HTTP " + resp.code);
             }
             return resp.body || "";
         } catch(e) {
@@ -1761,6 +1792,32 @@ function resolveStreamGen(id) {
             return cleanUrl(m[0]);
         }
 
+        // FIX v56 (aplicado tal cual el diagnóstico): si la respuesta es
+        // JSON con la URL en algún campo anidado en vez de texto plano.
+        try {
+            var obj = JSON.parse(resp);
+            var candidates = [
+                obj.url, obj.stream, obj.stream_url, obj.streamUrl,
+                obj.m3u8, obj.m3u8_url, obj.hls, obj.hls_url,
+                obj.play_url, obj.playUrl, obj.result, obj.data
+            ];
+            for (var ci = 0; ci < candidates.length; ci++) {
+                var v = candidates[ci];
+                if (!v) continue;
+                if (typeof v === "object") {
+                    v = v.url || v.stream || v.m3u8 || v.hls || v.play_url || v.playUrl || "";
+                }
+                if (typeof v !== "string") continue;
+                var mm = v.match(/https?:\/\/[^\s"'<>\\]+\.m3u8(?:\?[^\s"'<>\\]*)?/i);
+                if (mm && mm[0]) {
+                    addDebug("[streamGen] URL resuelta (JSON): " + mm[0]);
+                    return cleanUrl(mm[0]);
+                }
+            }
+        } catch (jsonError) {
+            // no era JSON, seguimos
+        }
+
         addDebug("[streamGen] respuesta no contiene m3u8: " + resp.substring(0, 100));
         return null;
     } catch (e) {
@@ -1874,7 +1931,7 @@ function xtAddSource(sources, cand) {
         }
 
     } catch (e) {
-        addDebug("[xt] source falló: " + (cand && cand.name));
+        addDebug("[xt] source falló: " + (cand && cand.name) + " -> " + String(e));
     }
 }
 
@@ -2091,11 +2148,18 @@ function mgMovieDetails(id) {
     // seguimos con los embeds.
     var sgUrl = resolveStreamGen(id);
     if (sgUrl) {
+        addDebug("[movie] stream/gen resolvió: " + sgUrl);
         var sgHls = mkMagmaHls(sgUrl, "stream/gen (interna)");
-        if (pushSource(sgHls)) {
-            desc += "\nstream/gen [interna]";
-            addDebug("[movie] stream/gen OK: " + sgUrl);
+        if (sgHls) {
+            if (pushSource(sgHls)) {
+                desc += "\nstream/gen [interna]";
+                addDebug("[movie] stream/gen fuente agregada");
+            }
+        } else {
+            addDebug("[movie] stream/gen HLS no pudo crearse");
         }
+    } else {
+        addDebug("[movie] stream/gen NO resolvió");
     }
 
     // 2) Embeds externos: hasta 2 servidores extra (hosts distintos).
