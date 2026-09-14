@@ -1918,6 +1918,7 @@ function jkaDetails(url) {
 // =========================================================
 
 function doSearch(query) {
+    _debugLog = "";
     var results = [];
 
     try {
@@ -1967,6 +1968,7 @@ function doSearch(query) {
 }
 
 function doDetails(url) {
+    _debugLog = "";
     if (!url) {
         return mkDetail(
             "",
@@ -2048,6 +2050,7 @@ function doDetails(url) {
 // =========================================================
 
 function doHome() {
+    _debugLog = "";
     var videos = [];
 
     try {
@@ -2147,6 +2150,7 @@ function doHome() {
 // una serie solo existían como texto suelto en la descripción y no
 // eran tocables.
 function doRecommendations(url) {
+    _debugLog = "";
     var videos = [];
 
     try {
